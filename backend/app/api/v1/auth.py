@@ -7,6 +7,7 @@ from app.models.user import User, UserRole
 from app.models.organization import Organization
 from app.schemas.user import UserCreate, UserLogin
 from app.core.security import hash_password, verify_password, create_access_token
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -62,6 +63,14 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(user_data.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    token = create_access_token({"sub": user.email})
+    token = create_access_token({
+        "sub": str(user.id),
+        "org_id": str(user.organization_id),
+        "role": user.role.value
+    })
 
     return {"access_token": token, "token_type": "bearer"}
+
+@router.get("/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return current_user
