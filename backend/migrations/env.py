@@ -7,6 +7,7 @@ from sqlalchemy import pool
 
 from alembic import context
 from app.models.campaigns import Campaign
+from app.models.lead import Lead
 
 # Load environment variables from .env
 load_dotenv()
