@@ -1,16 +1,29 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, DateTime, Boolean
+import enum
+from datetime import datetime
+
+from sqlalchemy import Column, String, ForeignKey, DateTime, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+
 from app.models.base import Base
-from sqlalchemy import String
+
+
+# ✅ Campaign Status Enum
+class CampaignStatus(str, enum.Enum):
+    draft = "draft"
+    scheduled = "scheduled"
+    running = "running"
+    paused = "paused"
+    completed = "completed"
+    stopped = "stopped"
+
 
 class Campaign(Base):
     __tablename__ = "campaigns"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
     name = Column(String(255), nullable=False)
     description = Column(String(500), nullable=True)
 
@@ -22,8 +35,15 @@ class Campaign(Base):
 
     bolna_agent_id = Column(String(255), nullable=True, index=True)
 
-    is_active = Column(Boolean, default=True)
+    # ✅ Replace is_active with lifecycle status
+    status = Column(
+        Enum(CampaignStatus, name="campaign_status"),
+        nullable=False,
+        default=CampaignStatus.draft
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationship
     organization = relationship("Organization")
