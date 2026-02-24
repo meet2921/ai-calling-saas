@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from app.api.v1.auth import router as auth_router
 from app.api.v1.campaigns import router as campaign_router
 from app.api.v1.lead import router as lead_router
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI()
 

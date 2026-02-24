@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.models.campaigns import Campaign
 from app.schemas.campaigns import CampaignCreate, CampaignResponse
 from app.core.security import get_current_user
+from app.services.bolna_service import get_agent_details
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
@@ -19,7 +20,8 @@ async def create_campaign(
     campaign = Campaign(
         name=campaign_data.name,
         description=campaign_data.description,
-        organization_id=current_user.organization_id
+        organization_id=current_user.organization_id,
+        bolna_agent_id=campaign_data.bolna_agent_id
     )
 
     db.add(campaign)
@@ -60,6 +62,30 @@ async def get_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     return campaign
+
+@router.get("/{campaign_id}/agent")
+async def get_campaign_agent(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    stmt = select(Campaign).where(
+        Campaign.id == campaign_id,
+        Campaign.organization_id == current_user.organization_id
+    )
+
+    result = await db.execute(stmt)
+    campaign = result.scalar_one_or_none()
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if not campaign.bolna_agent_id:
+        raise HTTPException(status_code=400, detail="No agent linked")
+
+    agent_data = await get_agent_details(campaign.bolna_agent_id)
+
+    return agent_data
 
 @router.delete("/{campaign_id}")
 async def delete_campaign(
