@@ -5,7 +5,13 @@ from uuid import UUID
 
 from app.db.session import get_db
 from app.models.campaigns import Campaign
-from app.schemas.campaigns import CampaignCreate, CampaignResponse
+from app.schemas.campaigns import CampaignCreate, CampaignResponse, CampaignStatusUpdate
+from app.services.campaign_service import (
+    start_campaign,
+    pause_campaign,
+    resume_campaign,
+    stop_campaign
+)
 from app.core.security import get_current_user
 from app.services.bolna_service import get_agent_details
 
@@ -86,6 +92,37 @@ async def get_campaign_agent(
     agent_data = await get_agent_details(campaign.bolna_agent_id)
 
     return agent_data
+
+@router.post("/{campaign_id}/start", response_model=CampaignResponse)
+async def start_campaign_endpoint(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return await start_campaign(db, campaign_id)
+
+
+@router.post("/{campaign_id}/pause", response_model=CampaignResponse)
+async def pause_campaign_endpoint(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return await pause_campaign(db, campaign_id)
+
+
+@router.post("/{campaign_id}/resume", response_model=CampaignResponse)
+async def resume_campaign_endpoint(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return await resume_campaign(db, campaign_id)
+
+
+@router.post("/{campaign_id}/stop", response_model=CampaignResponse)
+async def stop_campaign_endpoint(
+    campaign_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    return await stop_campaign(db, campaign_id)
 
 @router.delete("/{campaign_id}")
 async def delete_campaign(

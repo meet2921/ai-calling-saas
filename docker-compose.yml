@@ -21,5 +21,35 @@ services:
     ports:
       - "6379:6379"
 
+  backend:
+    build: .
+    container_name: saas_backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://saas_user:123456@postgres:5432/saas_db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_BACKEND_URL=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: .
+    container_name: saas_worker
+    command: celery -A app.core.celery_app.celery_app worker --loglevel=info -Q campaign_queue
+    volumes:
+      - .:/app
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://saas_user:123456@postgres:5432/saas_db
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_BACKEND_URL=redis://redis:6379/0
+
 volumes:
   pgdata:

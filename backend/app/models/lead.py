@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, ForeignKey,
+    Column, Integer, String, ForeignKey,
     DateTime, SmallInteger,
     Enum, UniqueConstraint
 )
@@ -56,6 +56,9 @@ class Lead(Base):
     )
 
     attempts = Column(SmallInteger, default=0)
+
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
 
     custom_fields = Column(JSONB, default=dict)
 

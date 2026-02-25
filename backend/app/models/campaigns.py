@@ -2,12 +2,12 @@ import uuid
 import enum
 from datetime import datetime
 
-from sqlalchemy import Column, String, ForeignKey, DateTime, Enum
+from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
-
+from sqlalchemy import Boolean
 
 # ✅ Campaign Status Enum
 class CampaignStatus(str, enum.Enum):
@@ -41,6 +41,9 @@ class Campaign(Base):
         nullable=False,
         default=CampaignStatus.draft
     )
+
+    is_processing = Column(Boolean, default=False, nullable=False)
+    call_delay_seconds = Column(Integer, default=1)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
