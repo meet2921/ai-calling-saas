@@ -1,2 +1,6 @@
 aicall-saas
+.venv
+__pycache__
+*.pyc
+.env
 .env
