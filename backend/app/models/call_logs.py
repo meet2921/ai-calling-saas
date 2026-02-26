@@ -45,3 +45,4 @@ class CallLog(Base):
 
     campaign = relationship("Campaign", backref="call_logs")
     lead = relationship("Lead", backref="call_logs")
+    external_call_id = Column(String, unique=True, index=True, nullable=False)

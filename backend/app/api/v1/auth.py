@@ -69,7 +69,7 @@ async def register(
         organization_id=org.id,
         email=data.email,
         password_hash=hash_password(data.password),
-        role=UserRole.OWNER,
+        role=UserRole.AGENT,
         first_name=data.first_name,
         last_name=data.last_name,
     )

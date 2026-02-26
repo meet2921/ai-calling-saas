@@ -7,9 +7,9 @@ from sqlalchemy.orm import mapped_column, Mapped, relationship
 from app.models.base import Base
 
 class UserRole(str, enum.Enum):
+    AGENT = "agent"
     OWNER = "owner"
     ADMIN = "admin"
-    AGENT = "agent"
 
 class User(Base):
     __tablename__ = "users"
@@ -17,7 +17,7 @@ class User(Base):
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4
-    )
+    )   
     
     # Foreign key → links to organizations table
     organization_id: Mapped[uuid.UUID] = mapped_column(
@@ -36,25 +36,15 @@ class User(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False
     )
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False)
+    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False, default=UserRole.AGENT )
     first_name: Mapped[str] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-<<<<<<< HEAD
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Many users belong to one org
-=======
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now()
-    )
-
-    # Many users belong to ONE org
->>>>>>> 936b9b8af513963bd848e80ad5be29b9737abcf2
     organization = relationship("Organization", back_populates="users")
 
     def __repr__(self):

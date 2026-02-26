@@ -1,6 +1,5 @@
 from sqlalchemy.ext.asyncio import (create_async_engine,async_sessionmaker,AsyncSession)
 from sqlalchemy.orm import DeclarativeBase
-<<<<<<< HEAD
 from sqlalchemy.ext.asyncio import (create_async_engine,async_sessionmaker,AsyncSession)
 from app.core.config import settings
 
@@ -19,9 +18,6 @@ AsyncSessionLocal = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
-=======
-from app.core.config import settings
->>>>>>> 936b9b8af513963bd848e80ad5be29b9737abcf2
 
 
 # This is the async engine — used by FastAPI routes
