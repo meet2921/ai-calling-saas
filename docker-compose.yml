@@ -7,7 +7,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: saas_user
-      POSTGRES_PASSWORD: saas_pass
+      POSTGRES_PASSWORD: 123456
       POSTGRES_DB: saas_db
     ports:
       - "5432:5432"

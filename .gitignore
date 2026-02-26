@@ -1,1 +1,5 @@
 aicall-saas
+.env
+docker-compose.yml
+.venv
+
