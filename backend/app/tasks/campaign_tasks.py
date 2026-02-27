@@ -65,7 +65,9 @@ def process_campaign(self, campaign_id: str):
                     # Make call
                     response = make_call(
                         phone=formatted_phone,
-                        agent_id=campaign.bolna_agent_id
+                        agent_id=campaign.bolna_agent_id,
+                        campaign_id=campaign.id,
+                        lead_id=lead.id
                     )
 
                     # SUCCESS

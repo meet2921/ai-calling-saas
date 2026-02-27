@@ -30,7 +30,12 @@ async def get_agent_details(agent_id: str):
 
     return response.json()
 
-def make_call(phone: str, agent_id: str, campaign_id: str = None, lead_id: str = None):
+def make_call(
+    phone: str,
+    agent_id: str,
+    campaign_id: str,
+    lead_id: str,
+):
 
     headers = {
         "Authorization": f"Bearer {BOLNA_API_KEY}",
@@ -41,14 +46,11 @@ def make_call(phone: str, agent_id: str, campaign_id: str = None, lead_id: str =
         "agent_id": agent_id,
         "recipient_phone_number": phone,
         "webhook_url": f"{WEBHOOK_BASE_URL}/api/v1/bolna/webhook",
+        "metadata": {
+            "campaign_id": str(campaign_id),
+            "lead_id": str(lead_id),
+        },
     }
-
-    # Add metadata only if provided
-    if campaign_id or lead_id:
-        payload["metadata"] = {
-            "campaign_id": campaign_id,
-            "lead_id": lead_id,
-        }
 
     response = httpx.post(
         f"{BOLNA_MAKE_CALL_URL}/call",
