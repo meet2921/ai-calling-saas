@@ -18,18 +18,9 @@ async def bolna_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Production-ready Bolna webhook handler
-    - Handles empty payloads
-    - Handles invalid JSON
-    - Idempotent (prevents duplicates)
-    - Transaction safe
-    """
-
-    # -------------------------
-    # 1. Read raw body safely
-    # -------------------------
     raw_body = await request.body()
+    print("HEADERS:", dict(request.headers))
+    print("RAW BODY:", raw_body.decode(errors="ignore"))
 
     if not raw_body:
         logger.warning("Bolna webhook received empty body")
@@ -43,70 +34,117 @@ async def bolna_webhook(
 
     logger.info("Bolna webhook received", extra={"payload": payload})
 
+    # Handle wrapper
+    event_type = payload.get("event")
+    if "data" in payload and isinstance(payload["data"], dict):
+        payload = payload["data"]
+
+    if event_type and event_type != "call.completed":
+        return {"status": "ignored", "reason": f"event {event_type} not processed"}
+
     # -------------------------
-    # 2. Validate minimum data
+    # Extract identifiers
     # -------------------------
-    campaign_id = payload.get("campaign_id")
-    lead_id = payload.get("lead_id")
-    call_id = payload.get("call_id")  # IMPORTANT: unique call id from Bolna
+    campaign_id = payload.get("campaign_id") or payload.get("metadata", {}).get("campaign_id")
+    lead_id = payload.get("lead_id") or payload.get("metadata", {}).get("lead_id")
+    call_id = payload.get("call_id") or payload.get("id")
     status_value = payload.get("status")
 
-    if not campaign_id or not call_id:
-        logger.warning("Missing campaign_id or call_id", extra={"payload": payload})
-        return {"status": "ignored", "reason": "missing identifiers"}
+    if not call_id:
+        return {"status": "ignored", "reason": "missing call_id"}
 
     # -------------------------
-    # 3. Idempotency check
+    # Normalize fields FIRST
     # -------------------------
-    existing = await db.scalar(
-        select(CallLog.id).where(CallLog.external_call_id == call_id)
+
+    # Duration
+    duration = payload.get("conversation_duration")
+    if duration is None:
+        duration = payload.get("telephony_data", {}).get("duration", 0)
+
+    try:
+        duration = float(duration or 0)
+    except (ValueError, TypeError):
+        duration = 0.0
+
+    # Cost
+    cost = payload.get("total_cost", 0)
+    try:
+        cost = float(cost or 0)
+    except (ValueError, TypeError):
+        cost = 0.0
+
+    # User number
+    user_number = (
+        payload.get("user_number")
+        or payload.get("phone_number")
+        or payload.get("recipient_phone_number")
+        or payload.get("context_details", {}).get("recipient_phone_number")
+        or payload.get("telephony_data", {}).get("to_number")
     )
 
-    if existing:
-        logger.info("Duplicate webhook ignored", extra={"call_id": call_id})
-        return {"status": "duplicate"}
-
-    # -------------------------
-    # 4. Normalize fields
-    # -------------------------
     appointment_date = payload.get("appointment_date")
     if appointment_date:
         try:
             appointment_date = datetime.fromisoformat(appointment_date)
-        except ValueError:
+        except Exception:
             appointment_date = None
 
     # -------------------------
-    # 5. Create CallLog
+    # Idempotency Check
     # -------------------------
-    call_log = CallLog(
-        external_call_id=call_id,
-        campaign_id=campaign_id,
-        lead_id=lead_id,
-        user_number=payload.get("phone_number"),
-        duration=payload.get("duration", 0),
-        cost=payload.get("cost", 0),
-        status=status_value,
-        recording_url=payload.get("recording_url"),
-        transcript=payload.get("transcript"),
-        interest_level=payload.get("interest_level"),
-        appointment_booked=payload.get("appointment_booked", False),
-        appointment_date=appointment_date,
-        appointment_mode=payload.get("appointment_mode"),
-        customer_sentiment=payload.get("customer_sentiment"),
-        final_call_summary=payload.get("final_summary"),
-        summary=payload.get("summary"),
-        transfer_call=payload.get("transfer_call", False),
-        executed_at=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+    result = await db.execute(
+        select(CallLog).where(CallLog.external_call_id == call_id)
     )
+    existing_log = result.scalar_one_or_none()
 
-    # -------------------------
-    # 6. Transaction-safe DB write
-    # -------------------------
     try:
-        db.add(call_log)
+        if existing_log:
+            # UPDATE
+            existing_log.duration = duration
+            existing_log.cost = cost
+            existing_log.status = status_value
+            existing_log.recording_url = payload.get("telephony_data", {}).get("recording_url")
+            existing_log.transcript = payload.get("transcript")
+            existing_log.customer_sentiment = (
+                payload.get("extracted_data", {}) or {}
+            ).get("customer_sentiment")
+            existing_log.interest_level = (
+                payload.get("extracted_data", {}) or {}
+            ).get("interest_level")
+            existing_log.final_call_summary = payload.get("summary")
 
+        else:
+            # CREATE
+            call_log = CallLog(
+                external_call_id=call_id,
+                campaign_id=campaign_id,
+                lead_id=lead_id,
+                user_number=user_number,
+                duration=duration,
+                cost=cost,
+                status=status_value,
+                recording_url=payload.get("telephony_data", {}).get("recording_url"),
+                transcript=payload.get("transcript"),
+                interest_level=(
+                    payload.get("extracted_data", {}) or {}
+                ).get("interest_level"),
+                appointment_booked=payload.get("appointment_booked", False),
+                appointment_date=appointment_date,
+                appointment_mode=payload.get("appointment_mode"),
+                customer_sentiment=(
+                    payload.get("extracted_data", {}) or {}
+                ).get("customer_sentiment"),
+                final_call_summary=payload.get("summary"),
+                summary=payload.get("summary"),
+                transfer_call=payload.get("transfer_call", False),
+                executed_at=datetime.utcnow(),
+                created_at=datetime.utcnow(),
+            )
+
+            db.add(call_log)
+
+        # Update Lead if exists
         if lead_id:
             lead = await db.get(Lead, lead_id)
             if lead:
@@ -115,15 +153,9 @@ async def bolna_webhook(
 
         await db.commit()
 
-    except Exception as e:
+    except Exception:
         await db.rollback()
         logger.exception("Failed to process Bolna webhook")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
-    # -------------------------
-    # 7. Success
-    # -------------------------
-    return {
-        "status": "processed",
-        "call_id": call_id,
-    }
+    return {"status": "processed", "call_id": call_id}

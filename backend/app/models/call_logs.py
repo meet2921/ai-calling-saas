@@ -12,10 +12,11 @@ class CallLog(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id"), nullable=False)
+    # allow records without a campaign (webhook payloads may not include one)
+    campaign_id = Column(UUID(as_uuid=True), ForeignKey("campaigns.id"), nullable=True)
     lead_id = Column(UUID(as_uuid=True), ForeignKey("leads.id"), nullable=True)
 
-    user_number = Column(String, nullable=False)
+    user_number = Column(String, nullable=True)  # May be absent in some webhook payloads
 
     duration = Column(Integer, default=0)  # seconds
     cost = Column(Float, default=0.0)
