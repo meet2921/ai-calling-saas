@@ -12,7 +12,7 @@ from app.services.campaign_service import (
     resume_campaign,
     stop_campaign
 )
-from app.core.security import get_current_user
+from app.core.deps import get_current_user
 from app.services.bolna_service import get_agent_details
 from app.models.user import User
 

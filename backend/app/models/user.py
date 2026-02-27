@@ -42,19 +42,9 @@ class User(Base):
     first_name: Mapped[str] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-<<<<<<< HEAD
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Many users belong to one org
-=======
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now()
-    )
-
-    # Many users belong to ONE org
->>>>>>> 936b9b8af513963bd848e80ad5be29b9737abcf2
     organization = relationship("Organization", back_populates="users")
 
     def __repr__(self):

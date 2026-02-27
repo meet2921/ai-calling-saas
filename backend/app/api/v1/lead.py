@@ -8,7 +8,7 @@ import io
 from app.db.session import get_db
 from app.models.lead import Lead
 from app.models.campaigns import Campaign
-from app.core.security import get_current_user
+from app.core.deps import get_current_user
 
 router = APIRouter()
 
