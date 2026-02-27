@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     SYNC_DATABASE_URL: str
 
     # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: str
     # CELERY_BROKER_URL: str
     # CELERY_RESULT_BACKEND: str
 
