@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException
 BOLNA_API_KEY = os.getenv("BOLNA_API_KEY")
 BOLNA_BASE_URL = os.getenv("BOLNA_API_URL", "https://api.bolna.ai/v2")
 BOLNA_MAKE_CALL_URL = os.getenv("BOLNAMAKE_CALL_URL", "https://api.bolna.ai")
-
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://matrilineal-hipshot-charlyn.ngrok-free.dev")
 async def get_agent_details(agent_id: str):
     headers = {
         "Authorization": f"Bearer {BOLNA_API_KEY}"
@@ -30,7 +30,12 @@ async def get_agent_details(agent_id: str):
 
     return response.json()
 
-def make_call(phone: str, agent_id: str):
+def make_call(
+    phone: str,
+    agent_id: str,
+    campaign_id: str,
+    lead_id: str,
+):
 
     headers = {
         "Authorization": f"Bearer {BOLNA_API_KEY}",
@@ -40,10 +45,15 @@ def make_call(phone: str, agent_id: str):
     payload = {
         "agent_id": agent_id,
         "recipient_phone_number": phone,
+        "webhook_url": f"{WEBHOOK_BASE_URL}/api/v1/bolna/webhook",
+        "metadata": {
+            "campaign_id": str(campaign_id),
+            "lead_id": str(lead_id),
+        },
     }
 
     response = httpx.post(
-        "https://api.bolna.ai/call",
+        f"{BOLNA_MAKE_CALL_URL}/call",
         headers=headers,
         json=payload,
         timeout=20
