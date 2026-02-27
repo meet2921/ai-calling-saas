@@ -8,6 +8,7 @@ import logging
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
+from app.core.deps import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 async def bolna_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
 ):
     raw_body = await request.body()
     print("HEADERS:", dict(request.headers))

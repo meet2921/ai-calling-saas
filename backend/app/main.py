@@ -11,6 +11,6 @@ app = FastAPI()
 
 app.include_router(auth_router)
 app.include_router(campaign_router)
-app.include_router(lead_router)
+app.include_router(lead_router,prefix="/api/v1", tags=["Leads"])
 app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
 app.include_router(analytics_router, prefix="/api/v1", tags=["Analytics"])
