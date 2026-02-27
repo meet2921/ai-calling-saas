@@ -1,5 +1,5 @@
 aicall-saas
-.env
-docker-compose.yml
 .venv
-
+__pycache__
+*.pyc
+.env

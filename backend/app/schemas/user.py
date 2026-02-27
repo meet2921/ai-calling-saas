@@ -5,7 +5,7 @@ from typing import Optional
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
-    organization_id: Optional[UUID] = None
+    organization_name: str
 
 class UserLogin(BaseModel):
     email: EmailStr
