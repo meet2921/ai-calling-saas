@@ -53,3 +53,12 @@ services:
 
 volumes:
   pgdata:
+
+
+# Fresh restart 
+# docker-compose down -v
+# backend/migrations/versions/
+# Delete every file inside that folder.
+# docker-compose up -d
+# alembic revision --autogenerate -m "initial schema"
+# alembic upgrade head
