@@ -11,7 +11,6 @@ from enum import Enum as PyEnum
 
 from app.models.base import Base
 
-
 class LeadStatus(str, PyEnum):
     PENDING = "pending"
     QUEUED = "queued"
@@ -65,3 +64,5 @@ class Lead(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     campaign = relationship("Campaign")
+
+    external_call_id = Column(String, nullable=True, index=True)

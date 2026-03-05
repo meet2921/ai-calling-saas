@@ -1,14 +1,25 @@
-from logging.config import fileConfig
+# Import your models so Alembic can detect them
+from app.models.base import Base                   # 1. Define Base first
+from app.models.user import User                   # 2. Then User
+from app.models.organization import Organization   # 3. Then Organization
+from app.models.campaigns import Campaign          # 4. Then Campaign
+from app.models.lead import Lead 
+
 import os
 from dotenv import load_dotenv
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
-from alembic import context
 from app.models.campaigns import Campaign
-from app.models.lead import Lead
 
+from logging.config import fileConfig
+from sqlalchemy import engine_from_config, pool
+from sqlalchemy.ext.asyncio import AsyncEngine
+from alembic import context
+import asyncio
+
+from app.core.config import settings
+
+config = context.config
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 # Load environment variables from .env
 load_dotenv()
@@ -26,8 +37,6 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-from app.models.base import Base
-from app.models.organization import Organization
 
 target_metadata = Base.metadata
 

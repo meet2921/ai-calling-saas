@@ -5,6 +5,7 @@ from uuid import UUID
 from app.db.session import get_db
 from app.services.analytics_service import get_campaign_analytics
 from app.models.call_logs import CallLog
+from app.core.deps import get_current_user
 from sqlalchemy.future import select
 
 router = APIRouter()

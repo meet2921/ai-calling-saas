@@ -7,7 +7,8 @@ import logging
 
 from app.db.session import get_db
 from app.models.call_logs import CallLog
-from app.models.lead import Lead
+from app.models.lead import Lead, LeadStatus
+from app.core.deps import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -16,20 +17,11 @@ logger = logging.getLogger(__name__)
 @router.post("/bolna/webhook", status_code=status.HTTP_200_OK)
 async def bolna_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db)
 ):
-    """
-    Production-ready Bolna webhook handler
-    - Handles empty payloads
-    - Handles invalid JSON
-    - Idempotent (prevents duplicates)
-    - Transaction safe
-    """
-
-    # -------------------------
-    # 1. Read raw body safely
-    # -------------------------
     raw_body = await request.body()
+    print("HEADERS:", dict(request.headers))
+    print("RAW BODY:", raw_body.decode(errors="ignore"))
 
     if not raw_body:
         logger.warning("Bolna webhook received empty body")
@@ -43,87 +35,257 @@ async def bolna_webhook(
 
     logger.info("Bolna webhook received", extra={"payload": payload})
 
+    # Handle wrapper
+    root_payload = payload  # preserve original
+
+    event_type = root_payload.get("event")
+
+    if "data" in root_payload and isinstance(root_payload["data"], dict):
+        payload = root_payload["data"]
+    else:
+        payload = root_payload
+
+    if event_type and not event_type.startswith("call"):
+        return {"status": "ignored", "reason": f"event {event_type} not processed"}
+
     # -------------------------
-    # 2. Validate minimum data
+    # 3. Extract Identifiers (call_id first, it's mandatory for idempotency)
     # -------------------------
-    campaign_id = payload.get("campaign_id")
-    lead_id = payload.get("lead_id")
-    call_id = payload.get("call_id")  # IMPORTANT: unique call id from Bolna
+    call_id = payload.get("call_id") or payload.get("id")
     status_value = payload.get("status")
 
-    if not campaign_id or not call_id:
-        logger.warning("Missing campaign_id or call_id", extra={"payload": payload})
-        return {"status": "ignored", "reason": "missing identifiers"}
+    if not call_id:
+        logger.warning("Bolna webhook missing call_id", extra={"payload": payload})
+        return {"status": "ignored", "reason": "missing call_id"}
 
     # -------------------------
-    # 3. Idempotency check
+    # Extract phone number early for lead lookup
     # -------------------------
-    existing = await db.scalar(
-        select(CallLog.id).where(CallLog.external_call_id == call_id)
+    user_number = (
+        payload.get("user_number")
+        or payload.get("phone_number")
+        or payload.get("recipient_phone_number")
+        or payload.get("context_details", {}).get("recipient_phone_number")
+        or payload.get("telephony_data", {}).get("to_number")
     )
 
-    if existing:
-        logger.info("Duplicate webhook ignored", extra={"call_id": call_id})
-        return {"status": "duplicate"}
+    # Try to get campaign_id and lead_id from payload or metadata first
+    metadata = (
+        payload.get("metadata")
+        or root_payload.get("metadata")
+        or {}
+    )
+
+    campaign_id = (
+        payload.get("campaign_id")
+        or metadata.get("campaign_id")
+    )
+
+    lead_id = (
+        payload.get("lead_id")
+        or metadata.get("lead_id")
+    )
+
+    # Fallback 1: look up by external_call_id (set when call was initiated)
+    if not campaign_id and not lead_id:
+        try:
+            result = await db.execute(
+                select(Lead).where(Lead.external_call_id == call_id)
+            )
+            lead_obj = result.scalar_one_or_none()
+            if lead_obj:
+                campaign_id = str(lead_obj.campaign_id)
+                lead_id = str(lead_obj.id)
+                logger.info(
+                    "Found lead via external_call_id",
+                    extra={"call_id": call_id, "lead_id": lead_id, "campaign_id": campaign_id}
+                )
+        except Exception as e:
+            logger.warning("Failed to lookup lead by external_call_id", extra={"error": str(e)})
+
+    # Fallback 2: look up by phone number (matches campaign leads)
+    if not campaign_id and not lead_id and user_number:
+        # Phone numbers in leads table are stored without country code (e.g., "7284885875")
+        # but webhook sends full international format (e.g., "+917284885875")
+        # Extract just the local number part
+        clean_phone = user_number.lstrip("+").replace(" ", "").replace("-", "")
+        
+        # For India (+91), remove country code to get local number
+        if clean_phone.startswith("91") and len(clean_phone) > 10:
+            local_phone = clean_phone[2:]  # Remove "91"
+        else:
+            local_phone = clean_phone
+        
+        phone_variants = [local_phone, clean_phone, user_number]  # Try all variants
+        
+        logger.info(
+            "Looking up lead by phone",
+            extra={
+                "user_number": user_number,
+                "local_phone": local_phone,
+                "variants": phone_variants
+            }
+        )
+        
+        for phone_variant in phone_variants:
+            try:
+                result = await db.execute(
+                    select(Lead).where(Lead.phone == phone_variant)
+                )
+                lead_obj = result.scalar_one_or_none()
+                if lead_obj:
+                    campaign_id = str(lead_obj.campaign_id)
+                    lead_id = str(lead_obj.id)
+                    # Update lead's external_call_id for future reference
+                    lead_obj.external_call_id = call_id
+                    logger.info(
+                        "Found lead via phone number",
+                        extra={
+                            "phone_variant": phone_variant,
+                            "lead_id": lead_id,
+                            "campaign_id": campaign_id,
+                        }
+                    )
+                    break  # Found it, stop searching
+            except Exception as e:
+                logger.warning(
+                    "Failed to lookup lead by phone variant",
+                    extra={"error": str(e), "phone": phone_variant}
+                )
+
+    if not campaign_id:
+        logger.warning(
+            "Bolna webhook campaign_id not provided and lead not found; storing null",
+            extra={"user_number": user_number, "call_id": call_id}
+        )
 
     # -------------------------
-    # 4. Normalize fields
+    # Normalize fields
     # -------------------------
+
+    # Duration
+    duration = payload.get("conversation_duration")
+    if duration is None:
+        duration = payload.get("telephony_data", {}).get("duration", 0)
+
+    try:
+        duration = float(duration or 0)
+    except (ValueError, TypeError):
+        duration = 0.0
+
+    # Cost
+    cost = payload.get("total_cost", 0)
+    try:
+        cost = float(cost or 0)
+    except (ValueError, TypeError):
+        cost = 0.0
+
     appointment_date = payload.get("appointment_date")
     if appointment_date:
         try:
             appointment_date = datetime.fromisoformat(appointment_date)
-        except ValueError:
+        except Exception:
             appointment_date = None
 
     # -------------------------
-    # 5. Create CallLog
+    # Idempotency Check
     # -------------------------
-    call_log = CallLog(
-        external_call_id=call_id,
-        campaign_id=campaign_id,
-        lead_id=lead_id,
-        user_number=payload.get("phone_number"),
-        duration=payload.get("duration", 0),
-        cost=payload.get("cost", 0),
-        status=status_value,
-        recording_url=payload.get("recording_url"),
-        transcript=payload.get("transcript"),
-        interest_level=payload.get("interest_level"),
-        appointment_booked=payload.get("appointment_booked", False),
-        appointment_date=appointment_date,
-        appointment_mode=payload.get("appointment_mode"),
-        customer_sentiment=payload.get("customer_sentiment"),
-        final_call_summary=payload.get("final_summary"),
-        summary=payload.get("summary"),
-        transfer_call=payload.get("transfer_call", False),
-        executed_at=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+    result = await db.execute(
+        select(CallLog).where(CallLog.external_call_id == call_id)
     )
+    existing_log = result.scalar_one_or_none()
 
-    # -------------------------
-    # 6. Transaction-safe DB write
-    # -------------------------
     try:
-        db.add(call_log)
 
+        # ------------------------------------------------
+        # CASE 1: CallLog already exists → UPDATE
+        # ------------------------------------------------
+        if existing_log:
+
+            existing_log.duration = duration
+            existing_log.cost = cost
+            existing_log.status = status_value
+            existing_log.recording_url = payload.get("telephony_data", {}).get("recording_url")
+            existing_log.transcript = payload.get("transcript")
+            existing_log.customer_sentiment = (
+                payload.get("extracted_data", {}) or {}
+            ).get("customer_sentiment")
+            existing_log.interest_level = (
+                payload.get("extracted_data", {}) or {}
+            ).get("interest_level")
+            existing_log.final_call_summary = payload.get("summary")
+            existing_log.summary = payload.get("summary")
+            existing_log.transfer_call = payload.get("transfer_call", False)
+
+            if campaign_id:
+                existing_log.campaign_id = campaign_id
+            if lead_id:
+                existing_log.lead_id = lead_id
+
+        # ------------------------------------------------
+        # CASE 2: CallLog does NOT exist (race condition)
+        # ------------------------------------------------
+        else:
+
+            # Only create if we successfully resolved lead_id
+            if not lead_id:
+                logger.warning(
+                    "CallLog missing and lead not resolved. Ignoring.",
+                    extra={"call_id": call_id}
+                )
+                return {"status": "ignored", "reason": "call_log_not_found"}
+
+            logger.warning(
+                "CallLog not found. Creating from webhook (race condition fix).",
+                extra={"call_id": call_id}
+            )
+
+            new_log = CallLog(
+                external_call_id=call_id,
+                campaign_id=campaign_id,
+                lead_id=lead_id,
+                user_number=user_number,
+                duration=duration,
+                cost=cost,
+                status=status_value,
+                recording_url=payload.get("telephony_data", {}).get("recording_url"),
+                transcript=payload.get("transcript"),
+                interest_level=(payload.get("extracted_data", {}) or {}).get("interest_level"),
+                appointment_booked=payload.get("appointment_booked", False),
+                appointment_date=appointment_date,
+                appointment_mode=payload.get("appointment_mode"),
+                customer_sentiment=(payload.get("extracted_data", {}) or {}).get("customer_sentiment"),
+                final_call_summary=payload.get("summary"),
+                summary=payload.get("summary"),
+                transfer_call=payload.get("transfer_call", False),
+                executed_at=datetime.utcnow(),
+                created_at=datetime.utcnow(),
+            )
+
+            db.add(new_log)
+
+        # ------------------------------------------------
+        # Update Lead status safely
+        # ------------------------------------------------
         if lead_id:
             lead = await db.get(Lead, lead_id)
             if lead:
-                lead.status = status_value
-                lead.last_contacted_at = datetime.utcnow()
+                bolna_to_lead_status = {
+                    "initiated": "calling",
+                    "in-progress": "calling",
+                    "ringing": "calling",
+                    "completed": "completed",
+                    "call-disconnected": "completed",
+                    "no-answer": "failed",
+                    "failed": "failed",
+                }
+                lead_status = bolna_to_lead_status.get(status_value, "calling")
+                lead.status = LeadStatus(lead_status)
+                lead.external_call_id = call_id
 
         await db.commit()
 
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.exception("Failed to process Bolna webhook")
+        logger.exception("Failed to process Bolna webhook update")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
-
-    # -------------------------
-    # 7. Success
-    # -------------------------
-    return {
-        "status": "processed",
-        "call_id": call_id,
-    }
