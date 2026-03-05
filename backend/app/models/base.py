@@ -3,7 +3,6 @@ from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings  
 from sqlalchemy.orm import DeclarativeBase, declared_attr
 
-
 # This is the async engine — used by FastAPI routes
 engine = create_async_engine(
     settings.DATABASE_URL,

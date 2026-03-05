@@ -62,3 +62,4 @@ volumes:
 # docker-compose up -d
 # alembic revision --autogenerate -m "initial schema"
 # alembic upgrade head
+# alembic upgrade head
