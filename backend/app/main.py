@@ -4,6 +4,7 @@ from app.api.v1.campaigns import router as campaign_router
 from app.api.v1.lead import router as lead_router
 from app.api.v1.webhook import router as webhook_router
 from app.api.v1.analytics import router as analytics_router
+from app.api.v1.wallet import router as wallet_router
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -14,3 +15,4 @@ app.include_router(campaign_router)
 app.include_router(lead_router)
 app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
 app.include_router(analytics_router, prefix="/api/v1", tags=["Analytics"])
+app.include_router(wallet_router, prefix="/api/v1", tags=["Wallet"])

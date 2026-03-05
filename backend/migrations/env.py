@@ -8,6 +8,7 @@ from sqlalchemy import pool
 from alembic import context
 from app.models.campaigns import Campaign
 from app.models.lead import Lead
+from app.models.wallet import Wallet, WalletTransaction
 
 
 # Load environment variables from .env

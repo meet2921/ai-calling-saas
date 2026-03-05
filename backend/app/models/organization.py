@@ -5,6 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 import uuid
 from datetime import datetime
+from app.models.wallet import Wallet
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -21,6 +22,7 @@ class Organization(Base):
 
     # One org has many users
     users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
+    wallet = relationship("Wallet", back_populates="organization", uselist=False)
 
     def __repr__(self):
         return f"<Organization {self.name}>"

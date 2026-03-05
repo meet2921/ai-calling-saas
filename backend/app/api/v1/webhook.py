@@ -8,6 +8,12 @@ import logging
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
+<<<<<<< Updated upstream
+=======
+from app.models.campaigns import Campaign
+from app.core.deps import get_current_user
+from app.services.wallet_service import deduct_minutes_for_call
+>>>>>>> Stashed changes
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -245,6 +251,55 @@ async def bolna_webhook(
                 lead_status = bolna_to_lead_status.get(status_value, "calling")
                 lead.status = LeadStatus(lead_status)
                 lead.external_call_id = call_id
+
+        # ------------------------------------------------
+        # Deduct minutes from wallet after call ends
+        # ------------------------------------------------
+        # Only deduct for completed calls with duration
+        # No deduction for failed/no-answer calls
+        if status_value in ("completed", "call-disconnected") and duration > 0:
+            if campaign_id:
+                try:
+                    # Get campaign to find organization_id
+                    campaign_result = await db.execute(
+                        select(Campaign).where(Campaign.id == campaign_id)
+                    )
+                    campaign_obj = campaign_result.scalar_one_or_none()
+
+                    if campaign_obj:
+                        # Get call_log id for transaction record
+                        log_id = None
+                        if existing_log:
+                            log_id = str(existing_log.id)
+
+                        # Deduct minutes from wallet
+                        deduction = await deduct_minutes_for_call(
+                            organization_id=str(campaign_obj.organization_id),
+                            duration_seconds=duration,
+                            call_log_id=log_id,
+                            db=db
+                        )
+
+                        logger.warning(
+                            f"Minutes deducted | "
+                            f"Call: {call_id} | "
+                            f"Duration: {duration}s | "
+                            f"Deducted: {deduction['minutes_deducted']} min | "
+                            f"Remaining: {deduction['new_balance']} min"
+                        )
+                    else:
+                        logger.warning(
+                            f"Campaign {campaign_id} not found "
+                            f"— skipping wallet deduction"
+                        )
+
+                except Exception as e:
+                    # IMPORTANT: wallet deduction failure should NOT
+                    # stop the webhook from saving call data
+                    # Log the error but continue
+                    logger.error(
+                        f"Wallet deduction failed for call {call_id}: {e}"
+                    )
 
         await db.commit()
 

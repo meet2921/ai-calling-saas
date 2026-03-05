@@ -5,6 +5,7 @@ from app.core.celery_app import celery_app
 from app.db.sync_session import SessionLocal
 from app.models.campaigns import Campaign, CampaignStatus
 from app.models.lead import Lead, LeadStatus
+from app.models.wallet import Wallet
 from app.services.bolna_service import make_call
 
 
@@ -33,7 +34,6 @@ def process_campaign(self, campaign_id: str):
                 print("Campaign paused or stopped")
                 break
 
-            # ✅ FIXED QUERY (retry safe)
             leads = db.query(Lead).filter(
                 Lead.campaign_id == campaign.id,
                 Lead.status.in_([LeadStatus.PENDING, LeadStatus.FAILED]),
@@ -54,6 +54,20 @@ def process_campaign(self, campaign_id: str):
                 if campaign.status != CampaignStatus.running:
                     print("Campaign paused during execution")
                     break
+
+                wallet = db.query(Wallet).filter(
+                    Wallet.organization_id == campaign.organization_id
+                ).first()
+
+                if not wallet or wallet.minutes_balance <= 0:
+                    print(
+                        f"Campaign {campaign_id} stopped — "
+                        f"insufficient balance"
+                    )
+                    campaign.status = CampaignStatus.paused
+                    campaign.is_processing = False
+                    db.commit()
+                    return 
 
                 try:
                     # Mark as queued
