@@ -3,4 +3,5 @@ aicall-saas
 __pycache__
 *.pyc
 .env
-.env
+call_ai
+

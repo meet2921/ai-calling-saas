@@ -26,16 +26,6 @@ class User(Base):
         nullable=False
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False
-    )
     email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False, default=UserRole.AGENT )
@@ -43,6 +33,11 @@ class User(Base):
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # role: Mapped[str] = mapped_column(String(50),nullable=False,default=UserRole.AGENT,server_default="agent")
+    updated_at = mapped_column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now())
+    last_login_at = mapped_column(DateTime(timezone=True),nullable=True)
+
 
     # Many users belong to one org
     organization = relationship("Organization", back_populates="users")
