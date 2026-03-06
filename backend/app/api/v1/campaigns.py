@@ -17,6 +17,7 @@ from app.services.bolna_service import get_agent_details
 from app.models.user import User
 from app.models.call_logs import CallLog
 from app.models.lead import Lead
+from app.services.wallet_service import has_sufficient_balance, get_balance
 
 async def get_authorized_campaign(
     campaign_id: UUID,
