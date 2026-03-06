@@ -1,1 +1,0 @@
-from .campaign_tasks import process_campaign
