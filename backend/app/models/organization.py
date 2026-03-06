@@ -44,7 +44,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.models.base import Base
-
+import uuid
+from datetime import datetime
+from app.models.wallet import Wallet
 
 class Organization(Base):
     __tablename__ = "organizations"
@@ -105,6 +107,9 @@ class Organization(Base):
             "comment": "Multi-tenant SaaS organizations. One org → many users."
         },
     )
+    # One org has many users
+    users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
+    wallet = relationship("Wallet", back_populates="organization", uselist=False)
 
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug!r} active={self.is_active}>"
