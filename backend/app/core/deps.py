@@ -2,10 +2,12 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.db.session import get_db, get_redis_client
 from app.core.security import decode_token, is_blacklisted
 from app.models.user import User
 from app.models.organization import Organization
+from app.models.user import UserRole
 
 # This reads the Bearer token from Authorization header
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -55,7 +57,7 @@ async def get_current_user(
         print(f"[AUTH] ❌ Token blacklisted (already logged out): {jti}")
         raise _unauth
 
-    # Fetch user from database
+    # Fetch user from database, including organization to prevent lazy loads
     user_id = payload.get("user_id")
     if not user_id:
         print("[AUTH] ❌ No user_id in token payload")
@@ -75,5 +77,22 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User is inactive"
         )
+    
+    if not user.organization.is_active:
+        raise HTTPException(
+                status_code=403,
+                detail="Organization is suspended"
+            )
 
     return user
+
+
+async def require_owner(
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role != UserRole.OWNER:
+        raise HTTPException(
+            status_code=403,
+            detail="Only platform owner allowed"
+        )
+    return current_user

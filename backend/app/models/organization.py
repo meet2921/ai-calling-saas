@@ -44,6 +44,42 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.models.base import Base
+import uuid
+from datetime import datetime
+from app.models.wallet import Wallet
+
+#class Organization(Base):
+#    __tablename__ = "organizations"
+#
+#    id: Mapped[uuid.UUID] = mapped_column(
+#        UUID(as_uuid=True),
+#        primary_key=True,
+#        default=uuid.uuid4
+#    )
+#    name: Mapped[str] = mapped_column(String(255), nullable=False)
+#    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+#    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+#    created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # One org has many users
+#    users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
+
+#   def __repr__(self):
+#        return f"<Organization {self.name}>"
+
+
+"""
+app/models/organization.py
+
+Multi-tenant SaaS Organization model.
+
+Design decisions:
+  - slug is NOT globally unique — same company name can register multiple orgs
+    (e.g. "acme" for acme.io and acme.co). Slug is a human-readable label only.
+  - slug is indexed for fast lookup during login (WHERE slug = ?)
+  - Soft delete via is_active — never hard delete orgs in SaaS
+  - cascade="all, delete-orphan" → deleting org purges all its users (use with caution)
+"""
 
 
 class Organization(Base):
@@ -105,6 +141,9 @@ class Organization(Base):
             "comment": "Multi-tenant SaaS organizations. One org → many users."
         },
     )
+    # One org has many users
+    users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
+    wallet = relationship("Wallet", back_populates="organization", uselist=False)
 
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug!r} active={self.is_active}>"

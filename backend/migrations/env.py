@@ -17,6 +17,9 @@ from alembic import context
 import asyncio
 
 from app.core.config import settings
+from app.models.campaigns import Campaign
+from app.models.lead import Lead
+from app.models.wallet import Wallet, WalletTransaction
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
