@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from uuid import UUID
-from app.services.wallet_service import has_sufficient_balance, get_balance
+
 from app.db.session import get_db
 from app.models.campaigns import Campaign
 from app.schemas.campaigns import CampaignCreate, CampaignResponse, CampaignStatusUpdate

@@ -8,9 +8,8 @@ from app.models.base import Base
 from app.models.campaigns import Campaign 
 
 class UserRole(str, enum.Enum):
-    AGENT = "agent"
-    OWNER = "owner"
-    ADMIN = "admin"
+    SUPER_ADMIN = "super_admin"   # You — platform owner, access to /admin/* panel
+    ADMIN       = "admin"         # Your SaaS customers — one per organization
 
 class User(Base):
     __tablename__ = "users"
@@ -29,7 +28,7 @@ class User(Base):
 
     email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False, default=UserRole.AGENT )
+    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole, name="userrole"), nullable=False, default=UserRole.ADMIN )
     first_name: Mapped[str] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -43,4 +42,4 @@ class User(Base):
     organization = relationship("Organization", back_populates="users")
 
     def __repr__(self):
-        return f"<User {self.email}>"
+        return f"<User {self.email} role={self.role}>"

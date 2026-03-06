@@ -5,7 +5,6 @@ from datetime import datetime
 from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from app.services.wallet_service import has_sufficient_balance, get_balance
 
 from app.models.base import Base
 from sqlalchemy import Boolean

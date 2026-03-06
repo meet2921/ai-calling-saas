@@ -4,7 +4,7 @@ from sqlalchemy import select
 from datetime import datetime
 import json
 import logging
-from sqlalchemy import select, func
+
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
@@ -288,44 +288,52 @@ async def bolna_webhook(
         # ------------------------------------------------
         # Deduct minutes from wallet after call ends
         # ------------------------------------------------
-        # Only deduct on UPDATE (existing_log), never on CREATE
-        # This prevents double-deduction when Bolna sends multiple webhooks
-        if existing_log and status_value in ("completed", "call-disconnected") and duration > 0:
+        # Only deduct for completed calls with duration
+        # No deduction for failed/no-answer calls
+        if status_value in ("completed", "call-disconnected") and duration > 0:
             if campaign_id:
-                # Check if we already deducted for this call_log
-                from app.models.wallet import WalletTransaction
-                already_deducted = await db.scalar(
-                    select(func.count()).select_from(WalletTransaction)
-                    .where(WalletTransaction.call_log_id == existing_log.id)
-                )
+                try:
+                    # Get campaign to find organization_id
+                    campaign_result = await db.execute(
+                        select(Campaign).where(Campaign.id == campaign_id)
+                    )
+                    campaign_obj = campaign_result.scalar_one_or_none()
 
-                if already_deducted == 0:
-                    try:
-                        campaign_result = await db.execute(
-                            select(Campaign).where(Campaign.id == campaign_id)
+                    if campaign_obj:
+                        # Get call_log id for transaction record
+                        log_id = None
+                        if existing_log:
+                            log_id = str(existing_log.id)
+
+                        # Deduct minutes from wallet
+                        deduction = await deduct_minutes_for_call(
+                            organization_id=str(campaign_obj.organization_id),
+                            duration_seconds=duration,
+                            call_log_id=log_id,
+                            db=db
                         )
-                        campaign_obj = campaign_result.scalar_one_or_none()
 
-                        if campaign_obj:
-                            deduction = await deduct_minutes_for_call(
-                                organization_id=str(campaign_obj.organization_id),
-                                duration_seconds=duration,
-                                call_log_id=str(existing_log.id),
-                                db=db
-                            )
-                            logger.warning(
-                                f"Minutes deducted | Call: {call_id} | "
-                                f"Duration: {duration}s | "
-                                f"Deducted: {deduction['minutes_deducted']} min | "
-                                f"Remaining: {deduction['new_balance']} min"
-                            )
-                        else:
-                            logger.warning(f"Campaign {campaign_id} not found — skipping wallet deduction")
+                        logger.warning(
+                            f"Minutes deducted | "
+                            f"Call: {call_id} | "
+                            f"Duration: {duration}s | "
+                            f"Deducted: {deduction['minutes_deducted']} min | "
+                            f"Remaining: {deduction['new_balance']} min"
+                        )
+                    else:
+                        logger.warning(
+                            f"Campaign {campaign_id} not found "
+                            f"— skipping wallet deduction"
+                        )
 
-                    except Exception as e:
-                        logger.error(f"Wallet deduction failed for call {call_id}: {e}")
-                else:
-                    logger.info(f"Skipping deduction — already deducted for call {call_id}")
+                except Exception as e:
+                    # IMPORTANT: wallet deduction failure should NOT
+                    # stop the webhook from saving call data
+                    # Log the error but continue
+                    logger.error(
+                        f"Wallet deduction failed for call {call_id}: {e}"
+                    )
+
         await db.commit()
 
     except Exception:

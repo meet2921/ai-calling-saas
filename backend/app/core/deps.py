@@ -8,7 +8,8 @@ from app.core.security import decode_token, is_blacklisted
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.user import UserRole
-
+from sqlalchemy.orm import selectinload
+ 
 # This reads the Bearer token from Authorization header
 bearer_scheme = HTTPBearer(auto_error=True)
 
@@ -63,8 +64,13 @@ async def get_current_user(
         print("[AUTH] ❌ No user_id in token payload")
         raise _unauth
     
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+    select(User)
+    .options(selectinload(User.organization))
+    .where(User.id == user_id)
+)
     user = result.scalar_one_or_none()
+
 
     if not user:
         raise HTTPException(
@@ -87,12 +93,15 @@ async def get_current_user(
     return user
 
 
-async def require_owner(
-    current_user: User = Depends(get_current_user)
-):
-    if current_user.role != UserRole.OWNER:
-        raise HTTPException(
-            status_code=403,
-            detail="Only platform owner allowed"
-        )
+async def require_super_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Only YOU (super_admin) can call endpoints using this."""
+    if current_user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="Super Admin access required.")
+    return current_user
+
+
+async def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Admin or Super Admin can call endpoints using this."""
+    if current_user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        raise HTTPException(status_code=403, detail="Admin access required.")
     return current_user
