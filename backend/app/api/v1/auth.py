@@ -355,7 +355,7 @@ async def get_me(
         email=current_user.email,
         first_name=current_user.first_name,
         last_name=current_user.last_name,
-        role=str(current_user.role),
+        role=current_user.role.value,
         organization_id=str(current_user.organization_id),
         org_name=org.name if org else "",
         org_slug=org.slug if org else "",

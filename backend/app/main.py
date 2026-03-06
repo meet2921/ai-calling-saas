@@ -14,7 +14,7 @@ app = FastAPI()
 # Apply the prefix to EVERYTHING for consistency
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(campaign_router, prefix="/api/v1/campaigns", tags=["Campaigns"])
-# app.include_router(user_router, prefix="/api/v1/users", tags=["Users"]) # Added this
+app.include_router(user_router, prefix="/api/v1/users", tags=["Users"]) # Added this
 app.include_router(lead_router, prefix="/api/v1", tags=["Leads"])
 app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
 app.include_router(analytics_router, prefix="/api/v1", tags=["Analytics"])
