@@ -5,6 +5,7 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SAEnum, fu
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import mapped_column, Mapped, relationship
 from app.models.base import Base
+from app.models.campaigns import Campaign 
 
 class UserRole(str, enum.Enum):
     AGENT = "agent"
@@ -37,7 +38,6 @@ class User(Base):
     # role: Mapped[str] = mapped_column(String(50),nullable=False,default=UserRole.AGENT,server_default="agent")
     updated_at = mapped_column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now())
     last_login_at = mapped_column(DateTime(timezone=True),nullable=True)
-
 
     # Many users belong to one org
     organization = relationship("Organization", back_populates="users")

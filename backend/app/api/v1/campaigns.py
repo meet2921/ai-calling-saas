@@ -118,7 +118,25 @@ async def get_campaign_agent(
 async def start_campaign_endpoint(
     campaign: Campaign = Depends(get_authorized_campaign),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    has_balance = await has_sufficient_balance(
+        str(current_user.organization_id), db
+    )
+
+    if not has_balance:
+        balance = await get_balance(
+            str(current_user.organization_id), db
+        )
+        raise HTTPException(
+            status_code=402,  # 402 = Payment Required
+            detail={
+                "error": "Insufficient balance",
+                "message": "Your wallet has 0 minutes. Please recharge to start campaign.",
+                "minutes_balance": balance["minutes_balance"],
+                "rate_per_minute": balance["rate_per_minute"],
+            }
+        )
     return await start_campaign(db, campaign.id)
 
 

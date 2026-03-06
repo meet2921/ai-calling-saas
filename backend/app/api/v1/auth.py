@@ -1,9 +1,10 @@
+# app/api/v1/auth.py   
 import time
 import secrets
 from datetime import timedelta, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer 
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -18,8 +19,10 @@ from app.schemas.auth import (
     TokenResponse,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    ChangePasswordRequest,
     MsgResponse,
     UserProfile,
+    OrgCheckResponse,
 )
 
 from app.core.security import (
@@ -40,47 +43,108 @@ _bearer = HTTPBearer(auto_error=False)
 _RESET_PREFIX = "pw:reset:"
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER — find existing org or create new one
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_or_create_org(
+    db: AsyncSession,
+    slug: str,
+    name: str,
+) -> tuple[Organization, bool]:
+    """
+    Returns (org, is_new).
+    is_new = True  → org was just created (user becomes ADMIN)
+    is_new = False → org already existed  (user becomes AGENT)
+    """
+    # Look for existing org by slug
+    result = await db.execute(
+        select(Organization)
+        .where(Organization.slug == slug)
+        .where(Organization.is_active == True)
+    )
+    org = result.scalar_one_or_none()
+
+    if org:
+        # ── Org already exists — REUSE it ────────────────────────────────────
+        print(f"[ORG] 🔍 Found existing org: '{org.name}' (slug={org.slug}, id={org.id})")
+        return org, False
+    else:
+        # ── Org does not exist — CREATE it ────────────────────────────────────
+        org = Organization(name=name, slug=slug)
+        db.add(org)
+        await db.flush()  # gets org.id without committing yet
+        print(f"[ORG] 🆕 Created new org: '{org.name}' (slug={org.slug}, id={org.id})")
+        return org, True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REGISTER — find-or-create org, then create user
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/register",
+    response_model=TokenResponse,
+    status_code=201,
+    summary="Register user — creates new org OR joins existing org by slug",
+)
 async def register(
     data: RegisterRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    normalized_email = data.email.lower().strip()
-    normalized_slug = data.org_slug.lower().strip()
+    """
+    Smart registration:
 
-    # 1️⃣ Check email already exists
-    existing = await db.execute(
+    **Case 1 — Org slug does NOT exist in DB:**
+    - Creates new organization with given slug
+    - Creates user as **ADMIN** (first member = owner)
+    - Terminal shows: `[REGISTER] 🆕 New org created`
+
+    **Case 2 — Org slug ALREADY EXISTS in DB:**
+    - Finds existing org, reuses its ID
+    - Creates user as **AGENT** (joining an existing team)
+    - Terminal shows: `[REGISTER] 🔗 Joined existing org`
+
+    **In both cases:**
+    - Email must be globally unique (fails if already registered)
+    - Returns access_token + refresh_token
+    - Sends welcome email
+
+    **Test with Swagger:**
+    ```
+    First call:  slug="abc-xyz" email="admin@abc.com"  → creates org + ADMIN user
+    Second call: slug="abc-xyz" email="staff@abc.com"  → finds org + AGENT user
+    Both users will have the SAME organization_id ✅
+    ```
+    """
+    normalized_email = data.email.lower().strip()
+    normalized_slug  = data.org_slug.lower().strip()
+
+    # ── Step 1: Email must be globally unique ──────────────────────────────────
+    existing_user = await db.execute(
         select(User).where(User.email == normalized_email)
     )
-    if existing.scalar_one_or_none():
+    if existing_user.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="An account with this email already exists. Please log in.",
+            detail=f"Email '{normalized_email}' is already registered. Please log in.",
         )
 
-    # 2️⃣ Check if organization already exists
-    result = await db.execute(
-        select(Organization).where(Organization.slug == normalized_slug)
+    # ── Step 2: Find existing org OR create new one ────────────────────────────
+    org, is_new_org = await _get_or_create_org(
+        db=db,
+        slug=normalized_slug,
+        name=data.org_name.strip(),
     )
-    org = result.scalar_one_or_none()
 
-    # 3️⃣ If not exists → create it
-    if not org:
-        org = Organization(
-            name=data.org_name.strip(),
-            slug=normalized_slug,
-            is_active=True,
-        )
-        db.add(org)
-        await db.flush()  # get org.id without commit
+    # ── Step 3: Assign role based on whether org is new ───────────────────────
+    #   First user of a new org → ADMIN (they created it, they own it)
+    #   Subsequent users of existing org → AGENT (they are joining a team)
+    role = UserRole.ADMIN if is_new_org else UserRole.AGENT
 
-        role = UserRole.ADMIN   # first user becomes admin
-    else:
-        role = UserRole.USER    # joining existing org → normal user
-
-    # 4️⃣ Create user under that org
+    # ── Step 4: Create user with the org.id (new or existing) ────────────────
     user = User(
-        organization_id=org.id,
+        organization_id=org.id,   # ← KEY: reuses existing org.id if org existed
         email=normalized_email,
         password_hash=hash_password(data.password),
         role=role,
@@ -89,35 +153,98 @@ async def register(
     )
     db.add(user)
 
+    # ── Step 5: Commit — DB unique index catches race conditions ──────────────
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Registration failed. Please try again.",
+            detail="Email already registered.",
         )
 
     await db.refresh(user)
     await db.refresh(org)
 
-    access_token  = create_access_token(str(user.id), str(org.id))
-    refresh_token = create_refresh_token(str(user.id), str(org.id))
+    # ── Step 6: Log the result clearly ────────────────────────────────────────
+    if is_new_org:
+        print(f"[REGISTER] 🆕 New org created: '{org.name}' ({org.slug})")
+        print(f"[REGISTER]    Admin user: {user.email} | org_id: {org.id}")
+    else:
+        print(f"[REGISTER] 🔗 Joined existing org: '{org.name}' ({org.slug})")
+        print(f"[REGISTER]    Agent user: {user.email} | org_id: {org.id}")
 
+    # ── Step 7: Welcome email ──────────────────────────────────────────────────
+    try:
+        await send_welcome_email(
+            to_email=user.email,
+            first_name=user.first_name,
+            org_name=org.name,
+            login_url=f"{settings.FRONTEND_URL}/login?org={org.slug}",
+        )
+    except Exception as e:
+        print(f"[EMAIL] ⚠️  Welcome email failed (registration still OK): {e}")
+
+    # ── Step 8: Issue tokens ───────────────────────────────────────────────────
     return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
+        "access_token":  create_access_token(str(user.id), str(org.id)),
+        "refresh_token": create_refresh_token(str(user.id), str(org.id)),
+        "token_type":    "bearer",
     }
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    data: LoginRequest,
-    db: AsyncSession = Depends(get_db),
-):
+# ─────────────────────────────────────────────────────────────────────────────
+# CHECK ORG — frontend uses this to show correct UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get(
+    "/org/{slug}",
+    response_model=OrgCheckResponse,
+    summary="Check if organization exists by slug",
+)
+async def check_org(slug: str, db: AsyncSession = Depends(get_db)):
+    """
+    Frontend calls this when user types a slug in the signup form.
+
+    Response:
+      { "exists": true,  "org_name": "ABC Corp", ... } → show "Joining ABC Corp"
+      { "exists": false, "org_name": "",          ... } → show "Creating new org"
+
+    No auth required — public endpoint.
+    """
+    result = await db.execute(
+        select(Organization)
+        .where(Organization.slug == slug.strip().lower())
+        .where(Organization.is_active == True)
+    )
+    org = result.scalar_one_or_none()
+
+    if org:
+        return OrgCheckResponse(
+            exists=True,
+            org_name=org.name,
+            org_slug=org.slug,
+            message=f"Organization '{org.name}' found. You will join as a member.",
+        )
+    return OrgCheckResponse(
+        exists=False,
+        message=f"Slug '{slug}' is available. A new organization will be created.",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGIN
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/login", response_model=TokenResponse, summary="Login")
+async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Login with org_slug + email + password.
+    Body: { "org_slug": "abc-xyz", "email": "admin@abc.com", "password": "Secure@123" }
+    """
     normalized_email = data.email.lower().strip()
 
+    # Find org by slug
     org_result = await db.execute(
         select(Organization)
         .where(Organization.slug == data.org_slug.lower().strip())
@@ -128,6 +255,7 @@ async def login(
     if not org:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # Find user scoped to that org
     user_result = await db.execute(
         select(User)
         .where(User.email == normalized_email)
@@ -135,33 +263,33 @@ async def login(
     )
     user = user_result.scalar_one_or_none()
 
-    # Look for something like this in auth.py:
-    # if not user:
-    #     print("DEBUG: Auth failed - either user not found or password wrong") # Add this
-    #     raise HTTPException(status_code=401, detail="Incorrect email or password")
-
-
+    # Same vague error for wrong email AND wrong password → no enumeration
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.is_active:
-        raise HTTPException(status_code=401, detail="Account is inactive")
-        # return None
+        raise HTTPException(status_code=401, detail="Account is inactive. Contact your admin.")
 
+    # Track last login
     await db.execute(
-        update(User)
-        .where(User.id == user.id)
+        update(User).where(User.id == user.id)
         .values(last_login_at=datetime.now(timezone.utc))
     )
     await db.commit()
 
-    access_token  = create_access_token(str(user.id), str(org.id))
-    refresh_token = create_refresh_token(str(user.id), str(org.id))
+    print(f"[LOGIN] ✅ {user.email} | org: {org.slug} | role: {user.role}")
+    return {
+        "access_token":  create_access_token(str(user.id), str(org.id)),
+        "refresh_token": create_refresh_token(str(user.id), str(org.id)),
+        "token_type":    "bearer",
+    }
 
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
+# ─────────────────────────────────────────────────────────────────────────────
+# REFRESH
+# ─────────────────────────────────────────────────────────────────────────────
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post("/refresh", response_model=TokenResponse, summary="Refresh token pair")
 async def refresh(
     data: RefreshRequest,
     db: AsyncSession = Depends(get_db),
@@ -198,19 +326,31 @@ async def refresh(
     }
 
 
-# @router.get("/me")
-# async def get_me(current_user: User = Depends(get_current_user)):
-#     return {
-#         "id":              str(current_user.id),
-#         "email":           current_user.email,
-#         "first_name":      current_user.first_name,
-#         "last_name":       current_user.last_name,
-#         "role":            current_user.role,
-#         "organization_id": str(current_user.organization_id),
-#     }
+# ─────────────────────────────────────────────────────────────────────────────
+# ME — requires Authorization: Bearer <access_token>
+# ─────────────────────────────────────────────────────────────────────────────
 
-@router.get("/me", response_model=UserProfile)
-async def get_me(current_user: User = Depends(get_current_user)):
+@router.get(
+    "/me",
+    response_model=UserProfile,
+    summary="Get current user — requires Authorization: Bearer <access_token>",
+)
+async def get_me(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    HOW TO USE IN SWAGGER:
+      1. Login → copy access_token
+      2. Click "Authorize 🔒" (top right of Swagger page)
+      3. Enter: Bearer <paste_token_here>
+      4. Click Authorize → Close → call /me
+    """
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == current_user.organization_id)
+    )
+    org = org_result.scalar_one_or_none()
+
     return UserProfile(
         id=str(current_user.id),
         email=current_user.email,
@@ -218,23 +358,23 @@ async def get_me(current_user: User = Depends(get_current_user)):
         last_name=current_user.last_name,
         role=str(current_user.role),
         organization_id=str(current_user.organization_id),
+        org_name=org.name if org else "",
+        org_slug=org.slug if org else "",
     )
 
 
-@router.post("/logout", response_model=MsgResponse)
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGOUT
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/logout", response_model=MsgResponse, summary="Logout — blacklists tokens")
 async def logout(
     data: RefreshRequest | None = None,
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
     redis=Depends(get_redis_client),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Send:
-      Header: Authorization: Bearer <access_token>
-      Body (optional): { "refresh_token": "..." }
-
-    Blacklists both tokens immediately.
-    """
+    
     tokens_to_revoke = []
     if creds:
         tokens_to_revoke.append(creds.credentials)
@@ -251,9 +391,13 @@ async def logout(
         except Exception:
             pass
 
-    print(f"[LOGOUT] ✅ {current_user.email} logged out")
+    print(f"[LOGOUT] ✅ {current_user.email}")
     return MsgResponse(message="Logged out successfully.")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORGOT PASSWORD
+# ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/forgot-password", response_model=MsgResponse)
 async def forgot_password(
@@ -261,14 +405,7 @@ async def forgot_password(
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis_client),
 ):
-    """
-    Sends reset email. Always returns 200 (no user enumeration).
-
-    After calling this, look in the UVICORN TERMINAL for:
-      [RESET] Token → xxxxxxxx
-
-    Use that token value in POST /reset-password as "reset_token".
-    """
+    """Always returns 200 — never reveals if email exists (anti-enumeration)."""
     _ok = MsgResponse(message="If that email is registered, a reset link has been sent.")
 
     org_result = await db.execute(
@@ -300,13 +437,13 @@ async def forgot_password(
         f"?token={reset_token}&org={org.slug}"
     )
 
-    # ── ALWAYS print to terminal so you can test without opening email ────────
-    print(f"\n{'='*60}")
-    print(f"[RESET] Password reset requested for: {user.email}")
-    print(f"[RESET] Token  → {reset_token}")
-    print(f"[RESET] Link   → {reset_link}")
-    print(f"[RESET] Use token above in POST /reset-password as 'reset_token'")
-    print(f"{'='*60}\n")
+    # Print token to terminal — use this to test without opening email
+    print(f"\n{'='*62}")
+    print(f"[RESET] Email  : {user.email}")
+    print(f"[RESET] Token  : {reset_token}")
+    print(f"[RESET] Link   : {reset_link}")
+    print(f"[RESET] → Copy token above. Use in POST /reset-password as 'reset_token'")
+    print(f"{'='*62}\n")
 
     try:
         await send_password_reset_email(
@@ -320,6 +457,11 @@ async def forgot_password(
 
     return _ok
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RESET PASSWORD
+# ─────────────────────────────────────────────────────────────────────────────
+
 @router.post("/reset-password", response_model=MsgResponse)
 async def reset_password(
     data: ResetPasswordRequest,
@@ -327,34 +469,23 @@ async def reset_password(
     redis=Depends(get_redis_client),
 ):
     """
-    FIX FOR 422 — send this exact JSON body:
-
-      {
-        "reset_token": "paste_the_token_here",
-        "new_password": "YourNewPass1!"
-      }
-
-    The token comes from:
-      - The uvicorn terminal: [RESET] Token → xxxxxxxx
-      - OR the email link:    ?token=xxxxxxxx  (copy just this part)
-
-    Password rules: 8+ chars, uppercase, lowercase, number, special char.
-    Examples: MyPass1!   Secure@123   Hello#2024
+    Body: { "reset_token": "from_terminal_or_email", "new_password": "NewPass1!" }
+    Token comes from the [RESET] Token line printed in uvicorn terminal,
+    or from the ?token= value in the email link.
     """
     redis_key   = f"{_RESET_PREFIX}{data.reset_token}"
     raw_user_id = await redis.get(redis_key)
 
     if not raw_user_id:
-        print(f"[RESET] ❌ Token not found in Redis: {data.reset_token[:10]}...")
+        print(f"[RESET] ❌ Token not found/expired")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reset link is invalid or has expired. Please request a new one.",
         )
 
     user_id = raw_user_id.decode() if isinstance(raw_user_id, bytes) else raw_user_id
-
-    result = await db.execute(select(User).where(User.id == user_id))
-    user   = result.scalar_one_or_none()
+    result  = await db.execute(select(User).where(User.id == user_id))
+    user    = result.scalar_one_or_none()
 
     if not user or not user.is_active:
         await redis.delete(redis_key)
@@ -365,7 +496,32 @@ async def reset_password(
 
     user.password_hash = hash_password(data.new_password)
     await db.commit()
-    await redis.delete(redis_key)   # single-use: delete after success
+    await redis.delete(redis_key)  # single-use
 
-    print(f"[RESET] ✅ Password reset successfully for {user.email}")
+    print(f"[RESET] ✅ Password changed for {user.email}")
     return MsgResponse(message="Password reset successfully. Please log in.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CHANGE PASSWORD (logged in)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.put("/me/password", response_model=MsgResponse)
+async def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Requires Authorization: Bearer <access_token> header."""
+    if not verify_password(data.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+
+    if data.current_password == data.new_password:
+        raise HTTPException(status_code=400,
+            detail="New password must be different from current password.")
+
+    current_user.password_hash = hash_password(data.new_password)
+    await db.commit()
+
+    print(f"[AUTH] ✅ Password changed for {current_user.email}")
+    return MsgResponse(message="Password changed successfully.")

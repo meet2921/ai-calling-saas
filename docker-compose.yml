@@ -1,4 +1,4 @@
-version: "3.9"
+version: "3.10"
 
 services:
   postgres:
@@ -61,4 +61,5 @@ volumes:
 # Delete every file inside that folder.
 # docker-compose up -d
 # alembic revision --autogenerate -m "initial schema"
+# alembic upgrade head
 # alembic upgrade head

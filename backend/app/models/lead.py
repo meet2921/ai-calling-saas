@@ -11,7 +11,6 @@ from enum import Enum as PyEnum
 
 from app.models.base import Base
 
-
 class LeadStatus(str, PyEnum):
     PENDING = "pending"
     QUEUED = "queued"

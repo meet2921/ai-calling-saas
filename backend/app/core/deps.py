@@ -51,7 +51,7 @@ async def get_current_user(
             detail="Wrong token type"
         )
     
-    # Step 3: Check blacklist (was it logged out?)
+     # Step 3: Check blacklist (was it logged out?)
     jti = payload.get("jti")
     if jti and await is_blacklisted(redis, jti):
         print(f"[AUTH] ❌ Token blacklisted (already logged out): {jti}")
@@ -63,11 +63,7 @@ async def get_current_user(
         print("[AUTH] ❌ No user_id in token payload")
         raise _unauth
     
-    result = await db.execute(
-        select(User)
-        .options(selectinload(User.organization))
-        .where(User.id == user_id)
-    )
+    result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if not user:
