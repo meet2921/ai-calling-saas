@@ -8,12 +8,9 @@ import logging
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
-<<<<<<< Updated upstream
-=======
 from app.models.campaigns import Campaign
 from app.core.deps import get_current_user
 from app.services.wallet_service import deduct_minutes_for_call
->>>>>>> Stashed changes
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

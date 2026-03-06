@@ -15,11 +15,8 @@ from app.services.campaign_service import (
 from app.core.deps import get_current_user
 from app.services.bolna_service import get_agent_details
 from app.models.user import User
-<<<<<<< Updated upstream
-=======
 from app.models.call_logs import CallLog
 from app.services.wallet_service import has_sufficient_balance, get_balance
->>>>>>> Stashed changes
 
 async def get_authorized_campaign(
     campaign_id: UUID,
