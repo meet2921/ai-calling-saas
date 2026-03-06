@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from uuid import UUID
 
 from app.db.session import get_db
@@ -16,7 +16,6 @@ from app.core.deps import get_current_user
 from app.services.bolna_service import get_agent_details
 from app.models.user import User
 from app.models.call_logs import CallLog
-from app.services.wallet_service import has_sufficient_balance, get_balance
 
 async def get_authorized_campaign(
     campaign_id: UUID,
@@ -181,6 +180,8 @@ async def delete_campaign(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    # remove any call logs tied to this campaign first to avoid FK violations
+    await db.execute(delete(CallLog).where(CallLog.campaign_id == campaign.id))
     await db.delete(campaign)
     await db.commit()
 

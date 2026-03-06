@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 @router.post("/bolna/webhook", status_code=status.HTTP_200_OK)
 async def bolna_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db)
 ):
     raw_body = await request.body()
     print("HEADERS:", dict(request.headers))
@@ -38,11 +38,16 @@ async def bolna_webhook(
     logger.info("Bolna webhook received", extra={"payload": payload})
 
     # Handle wrapper
-    event_type = payload.get("event")
-    if "data" in payload and isinstance(payload["data"], dict):
-        payload = payload["data"]
+    root_payload = payload  # preserve original
 
-    if event_type and event_type != "call.completed":
+    event_type = root_payload.get("event")
+
+    if "data" in root_payload and isinstance(root_payload["data"], dict):
+        payload = root_payload["data"]
+    else:
+        payload = root_payload
+
+    if event_type and not event_type.startswith("call"):
         return {"status": "ignored", "reason": f"event {event_type} not processed"}
 
     # -------------------------
@@ -67,8 +72,21 @@ async def bolna_webhook(
     )
 
     # Try to get campaign_id and lead_id from payload or metadata first
-    campaign_id = payload.get("campaign_id") or payload.get("metadata", {}).get("campaign_id")
-    lead_id = payload.get("lead_id") or payload.get("metadata", {}).get("lead_id")
+    metadata = (
+        payload.get("metadata")
+        or root_payload.get("metadata")
+        or {}
+    )
+
+    campaign_id = (
+        payload.get("campaign_id")
+        or metadata.get("campaign_id")
+    )
+
+    lead_id = (
+        payload.get("lead_id")
+        or metadata.get("lead_id")
+    )
 
     # Fallback 1: look up by external_call_id (set when call was initiated)
     if not campaign_id and not lead_id:
@@ -180,8 +198,12 @@ async def bolna_webhook(
     existing_log = result.scalar_one_or_none()
 
     try:
+
+        # ------------------------------------------------
+        # CASE 1: CallLog already exists → UPDATE
+        # ------------------------------------------------
         if existing_log:
-            # UPDATE
+
             existing_log.duration = duration
             existing_log.cost = cost
             existing_log.status = status_value
@@ -194,15 +216,33 @@ async def bolna_webhook(
                 payload.get("extracted_data", {}) or {}
             ).get("interest_level")
             existing_log.final_call_summary = payload.get("summary")
-            # Set campaign_id and lead_id if they were found via lookup
+            existing_log.summary = payload.get("summary")
+            existing_log.transfer_call = payload.get("transfer_call", False)
+
             if campaign_id:
                 existing_log.campaign_id = campaign_id
             if lead_id:
                 existing_log.lead_id = lead_id
 
+        # ------------------------------------------------
+        # CASE 2: CallLog does NOT exist (race condition)
+        # ------------------------------------------------
         else:
-            # CREATE
-            call_log = CallLog(
+
+            # Only create if we successfully resolved lead_id
+            if not lead_id:
+                logger.warning(
+                    "CallLog missing and lead not resolved. Ignoring.",
+                    extra={"call_id": call_id}
+                )
+                return {"status": "ignored", "reason": "call_log_not_found"}
+
+            logger.warning(
+                "CallLog not found. Creating from webhook (race condition fix).",
+                extra={"call_id": call_id}
+            )
+
+            new_log = CallLog(
                 external_call_id=call_id,
                 campaign_id=campaign_id,
                 lead_id=lead_id,
@@ -212,15 +252,11 @@ async def bolna_webhook(
                 status=status_value,
                 recording_url=payload.get("telephony_data", {}).get("recording_url"),
                 transcript=payload.get("transcript"),
-                interest_level=(
-                    payload.get("extracted_data", {}) or {}
-                ).get("interest_level"),
+                interest_level=(payload.get("extracted_data", {}) or {}).get("interest_level"),
                 appointment_booked=payload.get("appointment_booked", False),
                 appointment_date=appointment_date,
                 appointment_mode=payload.get("appointment_mode"),
-                customer_sentiment=(
-                    payload.get("extracted_data", {}) or {}
-                ).get("customer_sentiment"),
+                customer_sentiment=(payload.get("extracted_data", {}) or {}).get("customer_sentiment"),
                 final_call_summary=payload.get("summary"),
                 summary=payload.get("summary"),
                 transfer_call=payload.get("transfer_call", False),
@@ -228,14 +264,14 @@ async def bolna_webhook(
                 created_at=datetime.utcnow(),
             )
 
-            db.add(call_log)
+            db.add(new_log)
 
-        # Update Lead if exists
+        # ------------------------------------------------
+        # Update Lead status safely
+        # ------------------------------------------------
         if lead_id:
             lead = await db.get(Lead, lead_id)
             if lead:
-                # Map Bolna call status to LeadStatus enum
-                # Bolna statuses: initiated, in-progress, ringing, completed, no-answer, failed, call-disconnected
                 bolna_to_lead_status = {
                     "initiated": "calling",
                     "in-progress": "calling",
@@ -302,7 +338,5 @@ async def bolna_webhook(
 
     except Exception:
         await db.rollback()
-        logger.exception("Failed to process Bolna webhook")
+        logger.exception("Failed to process Bolna webhook update")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
-
-    return {"status": "processed", "call_id": call_id}

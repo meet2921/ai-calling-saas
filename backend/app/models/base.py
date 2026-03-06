@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import (create_async_engine,async_sessionmaker,AsyncSession)
 from sqlalchemy.orm import DeclarativeBase
-from app.core.config import settings
+from app.core.config import settings  
+from sqlalchemy.orm import DeclarativeBase, declared_attr
 
 # This is the async engine — used by FastAPI routes
 engine = create_async_engine(
@@ -20,4 +21,6 @@ AsyncSessionLocal = async_sessionmaker(
 
 # Base class — all your models will inherit from this
 class Base(DeclarativeBase):
-    pass
+    @declared_attr
+    def __tablename__(cls) -> str:
+        return cls.__name__.lower()
