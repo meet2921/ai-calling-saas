@@ -37,7 +37,7 @@ class Wallet(Base):
     )
 
     organization = relationship("Organization", back_populates="wallet")
-    transactions = relationship("WalletTransaction", back_populates="wallet")
+    transactions = relationship("WalletTransaction", back_populates="wallet",  cascade="all, delete-orphan")
 
 
 class WalletTransaction(Base):
