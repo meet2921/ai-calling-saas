@@ -1,8 +1,8 @@
-"""initial schema
+"""after_merge
 
-Revision ID: f673082faa2b
+Revision ID: 9ea85fc2a883
 Revises: 
-Create Date: 2026-03-06 11:10:59.580054
+Create Date: 2026-03-07 11:26:31.440935
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'f673082faa2b'
+revision: str = '9ea85fc2a883'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -29,9 +29,8 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id'),
-    comment='Multi-tenant SaaS organizations. One org → many users.'
+    comment='Multi-tenant SaaS organizations'
     )
-    op.create_index('ix_organizations_slug', 'organizations', ['slug'], unique=False)
     op.create_index('ix_organizations_slug_active', 'organizations', ['slug', 'is_active'], unique=False)
     op.create_table('campaigns',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -53,7 +52,7 @@ def upgrade() -> None:
     sa.Column('organization_id', sa.UUID(), nullable=False),
     sa.Column('email', sa.String(length=255), nullable=False),
     sa.Column('password_hash', sa.String(length=255), nullable=False),
-    sa.Column('role', sa.Enum('AGENT', 'OWNER', 'ADMIN', name='userrole'), nullable=False),
+    sa.Column('role', sa.Enum('SUPER_ADMIN', 'ADMIN', name='userrole'), nullable=False),
     sa.Column('first_name', sa.String(length=100), nullable=True),
     sa.Column('last_name', sa.String(length=100), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
@@ -159,6 +158,5 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_campaigns_bolna_agent_id'), table_name='campaigns')
     op.drop_table('campaigns')
     op.drop_index('ix_organizations_slug_active', table_name='organizations')
-    op.drop_index('ix_organizations_slug', table_name='organizations')
     op.drop_table('organizations')
     # ### end Alembic commands ###

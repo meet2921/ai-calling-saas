@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from uuid import UUID
 from app.services.wallet_service import has_sufficient_balance, get_balance
 from app.db.session import get_db
@@ -16,6 +16,8 @@ from app.core.deps import get_current_user
 from app.services.bolna_service import get_agent_details
 from app.models.user import User
 from app.models.call_logs import CallLog
+from app.models.lead import Lead
+from app.services.wallet_service import has_sufficient_balance, get_balance
 
 async def get_authorized_campaign(
     campaign_id: UUID,
@@ -137,6 +139,13 @@ async def start_campaign_endpoint(
                 "rate_per_minute": balance["rate_per_minute"],
             }
         )
+    # Check if there are any leads for this campaign
+    lead_count = await db.execute(
+        select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id)
+    )
+    if lead_count.scalar() == 0:
+        raise HTTPException(status_code=400, detail="No leads found for this campaign")
+
     return await start_campaign(db, campaign.id)
 
 
