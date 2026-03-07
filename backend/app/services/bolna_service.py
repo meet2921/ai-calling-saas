@@ -62,20 +62,33 @@ def _extract_call_id(data):
 
     return None
 async def get_agent_details(agent_id: str):
-    headers = {
-        "Authorization": f"Bearer {BOLNA_API_KEY}"
-    }
+    """Fetch details for a Bolna agent.
+
+    The Bolna API will return 404 if the supplied ID does not exist, which is
+    the most common reason for failures here. We propagate the original status
+    code so callers can distinguish between client and server errors (e.g. a
+    missing agent vs. an invalid API key).
+    """
+
+    if not BOLNA_API_KEY:
+        # early sanity check; avoids sending an empty `Bearer None` header
+        raise HTTPException(status_code=500, detail="Bolna API key is not set")
+
+    headers = {"Authorization": f"Bearer {BOLNA_API_KEY}"}
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{BOLNA_BASE_URL}/agent/{agent_id}",
-            headers=headers
+            headers=headers,
         )
 
-    if response.status_code != 200: 
+    if response.status_code != 200:
+        # propagate the real status code from Bolna so that a 404 comes back
+        # as a 404 to our own client instead of a generic 400, which makes it
+        # easier to debug mismatched IDs.
         raise HTTPException(
-            status_code=400,
-            detail=f"Bolna error: {response.text}"
+            status_code=response.status_code,
+            detail=f"Bolna error: {response.text}",
         )
 
     return response.json()
