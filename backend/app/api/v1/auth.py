@@ -13,7 +13,6 @@ from app.db.session import get_db, get_redis_client
 from app.models.user import User, UserRole
 from app.models.organization import Organization
 from app.schemas.auth import (
-    RegisterRequest,
     LoginRequest,
     RefreshRequest,
     TokenResponse,
@@ -22,7 +21,6 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     MsgResponse,
     UserProfile,
-    OrgCheckResponse,
 )
 
 from app.core.security import (
@@ -35,201 +33,12 @@ from app.core.security import (
     is_blacklisted,
 )
 from app.core.deps import get_current_user
-from app.core.email import send_welcome_email, send_password_reset_email
+from app.core.email import send_password_reset_email
 from app.core.config import settings
 
 router = APIRouter(tags=["Auth"])
 _bearer = HTTPBearer(auto_error=False)
 _RESET_PREFIX = "pw:reset:"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPER — find existing org or create new one
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _get_or_create_org(
-    db: AsyncSession,
-    slug: str,
-    name: str,
-) -> tuple[Organization, bool]:
-    """
-    Returns (org, is_new).
-    is_new = True  → org was just created (user becomes ADMIN)
-    is_new = False → org already existed  (user becomes AGENT)
-    """
-    # Look for existing org by slug
-    result = await db.execute(
-        select(Organization)
-        .where(Organization.slug == slug)
-        .where(Organization.is_active == True)
-    )
-    org = result.scalar_one_or_none()
-
-    if org:
-        # ── Org already exists — REUSE it ────────────────────────────────────
-        print(f"[ORG] 🔍 Found existing org: '{org.name}' (slug={org.slug}, id={org.id})")
-        return org, False
-    else:
-        # ── Org does not exist — CREATE it ────────────────────────────────────
-        org = Organization(name=name, slug=slug)
-        db.add(org)
-        await db.flush()  # gets org.id without committing yet
-        print(f"[ORG] 🆕 Created new org: '{org.name}' (slug={org.slug}, id={org.id})")
-        return org, True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# REGISTER — find-or-create org, then create user
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post(
-    "/register",
-    response_model=TokenResponse,
-    status_code=201,
-    summary="Register user — creates new org OR joins existing org by slug",
-)
-async def register(
-    data: RegisterRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Smart registration:
-
-    **Case 1 — Org slug does NOT exist in DB:**
-    - Creates new organization with given slug
-    - Creates user as **ADMIN** (first member = owner)
-    - Terminal shows: `[REGISTER] 🆕 New org created`
-
-    **Case 2 — Org slug ALREADY EXISTS in DB:**
-    - Finds existing org, reuses its ID
-    - Creates user as **AGENT** (joining an existing team)
-    - Terminal shows: `[REGISTER] 🔗 Joined existing org`
-
-    **In both cases:**
-    - Email must be globally unique (fails if already registered)
-    - Returns access_token + refresh_token
-    - Sends welcome email
-
-    **Test with Swagger:**
-    ```
-    First call:  slug="abc-xyz" email="admin@abc.com"  → creates org + ADMIN user
-    Second call: slug="abc-xyz" email="staff@abc.com"  → finds org + AGENT user
-    Both users will have the SAME organization_id ✅
-    ```
-    """
-    normalized_email = data.email.lower().strip()
-    normalized_slug  = data.org_slug.lower().strip()
-
-    # ── Step 1: Email must be globally unique ──────────────────────────────────
-    existing_user = await db.execute(
-        select(User).where(User.email == normalized_email)
-    )
-    if existing_user.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Email '{normalized_email}' is already registered. Please log in.",
-        )
-
-    # ── Step 2: Find existing org OR create new one ────────────────────────────
-    org, is_new_org = await _get_or_create_org(
-        db=db,
-        slug=normalized_slug,
-        name=data.org_name.strip(),
-    )
-
-    # ── Step 3: Assign role based on whether org is new ───────────────────────
-    #   First user of a new org → ADMIN (they created it, they own it)
-    #   Subsequent users of existing org → AGENT (they are joining a team)
-    role = UserRole.ADMIN if is_new_org else UserRole.AGENT
-
-    # ── Step 4: Create user with the org.id (new or existing) ────────────────
-    user = User(
-        organization_id=org.id,   # ← KEY: reuses existing org.id if org existed
-        email=normalized_email,
-        password_hash=hash_password(data.password),
-        role=role,
-        first_name=data.first_name.strip(),
-        last_name=data.last_name.strip(),
-    )
-    db.add(user)
-
-    # ── Step 5: Commit — DB unique index catches race conditions ──────────────
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered.",
-        )
-
-    await db.refresh(user)
-    await db.refresh(org)
-
-    # ── Step 6: Log the result clearly ────────────────────────────────────────
-    if is_new_org:
-        print(f"[REGISTER] 🆕 New org created: '{org.name}' ({org.slug})")
-        print(f"[REGISTER]    Admin user: {user.email} | org_id: {org.id}")
-    else:
-        print(f"[REGISTER] 🔗 Joined existing org: '{org.name}' ({org.slug})")
-        print(f"[REGISTER]    Agent user: {user.email} | org_id: {org.id}")
-
-    # ── Step 7: Welcome email ──────────────────────────────────────────────────
-    try:
-        await send_welcome_email(
-            to_email=user.email,
-            first_name=user.first_name,
-            org_name=org.name,
-            login_url=f"{settings.FRONTEND_URL}/login?org={org.slug}",
-        )
-    except Exception as e:
-        print(f"[EMAIL] ⚠️  Welcome email failed (registration still OK): {e}")
-
-    # ── Step 8: Issue tokens ───────────────────────────────────────────────────
-    return {
-        "access_token":  create_access_token(str(user.id), str(org.id)),
-        "refresh_token": create_refresh_token(str(user.id), str(org.id)),
-        "token_type":    "bearer",
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHECK ORG — frontend uses this to show correct UI
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get(
-    "/org/{slug}",
-    response_model=OrgCheckResponse,
-    summary="Check if organization exists by slug",
-)
-async def check_org(slug: str, db: AsyncSession = Depends(get_db)):
-    """
-    Frontend calls this when user types a slug in the signup form.
-
-    Response:
-      { "exists": true,  "org_name": "ABC Corp", ... } → show "Joining ABC Corp"
-      { "exists": false, "org_name": "",          ... } → show "Creating new org"
-
-    No auth required — public endpoint.
-    """
-    result = await db.execute(
-        select(Organization)
-        .where(Organization.slug == slug.strip().lower())
-        .where(Organization.is_active == True)
-    )
-    org = result.scalar_one_or_none()
-
-    if org:
-        return OrgCheckResponse(
-            exists=True,
-            org_name=org.name,
-            org_slug=org.slug,
-            message=f"Organization '{org.name}' found. You will join as a member.",
-        )
-    return OrgCheckResponse(
-        exists=False,
-        message=f"Slug '{slug}' is available. A new organization will be created.",
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -374,7 +183,6 @@ async def logout(
     redis=Depends(get_redis_client),
     current_user: User = Depends(get_current_user),
 ):
-    
     tokens_to_revoke = []
     if creds:
         tokens_to_revoke.append(creds.credentials)

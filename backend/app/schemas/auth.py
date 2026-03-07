@@ -13,39 +13,6 @@ def _validate_password(v: str) -> str:
     return v
 
 
-# ─── REGISTER (find-or-create org) ────────────────────────────────────────────
-
-class RegisterRequest(BaseModel):
-    """
-    Single registration schema.
-
-    Logic in backend:
-      1. Look up org_slug in organizations table
-      2. If EXISTS  → use existing org_id, create user with role='agent'
-      3. If MISSING → create new org, create user with role='admin'
-    """
-    
-    org_name:   str      = Field(..., min_length=2, max_length=100, examples=["ABC Corp"])
-    org_slug:   str      = Field(..., min_length=2, max_length=50,  examples=["abc-xyz"])
-    first_name: str      = Field(..., min_length=1, max_length=50)
-    last_name:  str      = Field(..., min_length=1, max_length=50)
-    email:      EmailStr
-    password:   str
-
-    @field_validator("password")
-    @classmethod
-    def strong_password(cls, v: str) -> str:
-        return _validate_password(v)
-
-    @field_validator("org_slug")
-    @classmethod
-    def slug_format(cls, v: str) -> str:
-        v = v.strip().lower()
-        if not re.match(r"^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]{1}$", v):
-            raise ValueError("Slug: lowercase letters, numbers, hyphens only. e.g. abc-xyz")
-        return v
-
-
 # ─── LOGIN ────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
@@ -129,17 +96,9 @@ class UserProfile(BaseModel):
     email:           str
     first_name:      str
     last_name:       str
-    role:            UserRole
+    role:            str       # changed from UserRole to str
     organization_id: str
     org_name:        str
     org_slug:        str
 
     model_config = {"from_attributes": True}
-
-
-class OrgCheckResponse(BaseModel):
-    """Returned by GET /auth/org/{slug} so frontend knows if org exists."""
-    exists:   bool
-    org_name: str  = ""
-    org_slug: str  = ""
-    message:  str  = ""

@@ -86,18 +86,10 @@ class Organization(Base):
     __tablename__ = "organizations"
 
     # ── Primary key ───────────────────────────────────────────────────────────
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True),primary_key=True,default=uuid.uuid4)
 
     # ── Fields ────────────────────────────────────────────────────────────────
-    name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        comment="Human-readable org name, e.g. 'Acme Corp'",
-    )
+    name: Mapped[str] = mapped_column(String(255),nullable=False,comment="Human-readable org name, e.g. 'Acme Corp'")
     slug: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
@@ -144,6 +136,11 @@ class Organization(Base):
     # One org has many users
     users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
     wallet = relationship("Wallet", back_populates="organization", uselist=False)
-
+    
+    __table_args__ = (
+        Index("ix_organizations_slug_active", "slug", "is_active"),
+        {"comment": "Multi-tenant SaaS organizations"},
+    )
+    
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug!r} active={self.is_active}>"
