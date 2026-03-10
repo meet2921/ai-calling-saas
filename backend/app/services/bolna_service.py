@@ -8,9 +8,51 @@ load_dotenv()
 from starlette.exceptions import HTTPException
 
 BOLNA_API_KEY = os.getenv("BOLNA_API_KEY")
-BOLNA_BASE_URL = os.getenv("BOLNA_API_URL", "https://api.bolna.ai/v2")
-BOLNA_MAKE_CALL_URL = os.getenv("BOLNAMAKE_CALL_URL", "https://api.bolna.ai")
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://matrilineal-hipshot-charlyn.ngrok-free.dev")
+BOLNA_BASE_URL = os.getenv("BOLNA_API_URL")
+BOLNA_MAKE_CALL_URL = os.getenv("BOLNAMAKE_CALL_URL")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
+
+
+def _extract_call_id(data):
+    if not data:
+        return None
+    # dict with top-level id (accept execution/run ids as fallbacks)
+    if isinstance(data, dict):
+        for key in ("id", "call_id", "execution_id", "run_id"):
+            val = data.get(key)
+            if val:
+                return val
+
+        # nested objects commonly named 'data', 'call', or 'result'
+        for parent in ("data", "call", "result"):
+            nested = data.get(parent)
+            if isinstance(nested, dict):
+                for key in ("id", "call_id", "execution_id", "run_id"):
+                    val = nested.get(key)
+                    if val:
+                        return val
+
+        # arrays: take first element
+        for list_key in ("calls",):
+            lst = data.get(list_key)
+            if isinstance(lst, list) and lst:
+                first = lst[0]
+                if isinstance(first, dict):
+                    for key in ("id", "call_id", "execution_id", "run_id"):
+                        val = first.get(key)
+                        if val:
+                            return val
+
+    # response may be a list of objects
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            for key in ("id", "call_id", "execution_id", "run_id"):
+                val = first.get(key)
+                if val:
+                    return val
+
+    return None
 async def get_agent_details(agent_id: str):
     headers = {
         "Authorization": f"Bearer {BOLNA_API_KEY}"
