@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.models.user import User, UserRole
-from app.models.wallet import Wallet, WalletTransaction
+from app.models.wallet import Wallet, WalletTransaction, TransactionType
 from app.services.wallet_service import get_balance
+
 
 router = APIRouter(prefix="/wallet", tags=["Wallet"])
 
@@ -66,6 +67,7 @@ async def get_wallet_transactions(
 
 
 @router.get("/summary")
+@router.get("/summary")
 async def get_wallet_summary(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -87,7 +89,15 @@ async def get_wallet_summary(
             "total_minutes_used": 0,
             "total_amount_paid": 0,
             "estimated_cost_remaining": 0,
+            "billed_minutes": 0,
         }
+
+    billed_result = await db.execute(
+        select(func.coalesce(func.sum(WalletTransaction.minutes), 0))
+        .where(WalletTransaction.wallet_id == wallet.id)
+        .where(WalletTransaction.transaction_type == TransactionType.DEBIT)
+    )
+    billed_minutes = billed_result.scalar()
 
     estimated_cost_remaining = round(
         wallet.minutes_balance * wallet.rate_per_minute, 2
@@ -100,4 +110,5 @@ async def get_wallet_summary(
         "total_minutes_used": wallet.total_minutes_used,
         "total_amount_paid": wallet.total_amount_paid,
         "estimated_cost_remaining": estimated_cost_remaining,
+        "billed_minutes": billed_minutes,
     }
