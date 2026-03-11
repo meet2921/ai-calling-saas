@@ -16,9 +16,9 @@ load_dotenv()
 from starlette.exceptions import HTTPException
 
 BOLNA_API_KEY = os.getenv("BOLNA_API_KEY")
-BOLNA_BASE_URL = os.getenv("BOLNA_API_URL", "https://api.bolna.ai/v2")
-BOLNA_MAKE_CALL_URL = os.getenv("BOLNAMAKE_CALL_URL", "https://api.bolna.ai")
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://unantagonized-morton-twopenny.ngrok-free.dev")
+BOLNA_BASE_URL = os.getenv("BOLNA_API_URL")
+BOLNA_MAKE_CALL_URL = os.getenv("BOLNAMAKE_CALL_URL")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
 
 
 def _extract_call_id(data):
