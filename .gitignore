@@ -7,3 +7,16 @@ aicall-saas
 call_ai
 
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+.venv
+
+# OS
+.DS_Store
+Thumbs.db
