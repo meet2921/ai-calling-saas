@@ -107,20 +107,32 @@ async def register_org_and_admin(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_super_admin),
 ):
-    # Check slug not taken
-    if (await db.execute(select(Organization).where(Organization.slug == data.org_slug))).scalar_one_or_none():
-        raise HTTPException(status_code=400, detail=f"Slug '{data.org_slug}' is already taken.")
-
-    # Check email not already registered
-    if (await db.execute(select(User).where(User.email == data.email))).scalar_one_or_none():
+    # ── Step 1: Email must be globally unique ──────────────────────────────
+    existing_email = (await db.execute(
+        select(User).where(User.email == data.email).limit(1)
+    )).scalar_one_or_none()
+    if existing_email:
         raise HTTPException(status_code=400, detail=f"Email '{data.email}' is already registered.")
 
-    # Create org
-    org = Organization(id=uuid.uuid4(), name=data.org_name.strip(), slug=data.org_slug, is_active=True)
-    db.add(org)
-    await db.flush()
+    # ── Step 2: Find existing org OR create new one ────────────────────────
+    existing_org = (await db.execute(
+        select(Organization).where(Organization.slug == data.org_slug).limit(1)
+    )).scalar_one_or_none()
 
-    # Create admin user
+    if existing_org:
+        # Case 2 — Org already exists, reuse it
+        org = existing_org
+        org_is_new = False
+        print(f"[REGISTER] 🔗 Joined existing org: '{org.name}' ({org.slug})")
+    else:
+        # Case 1 — Create new org
+        org = Organization(id=uuid.uuid4(), name=data.org_name.strip(), slug=data.org_slug, is_active=True)
+        db.add(org)
+        await db.flush()
+        org_is_new = True
+        print(f"[REGISTER] 🆕 New org created: '{org.name}' ({org.slug})")
+
+    # ── Step 3: Create admin user ──────────────────────────────────────────
     admin = User(
         id=uuid.uuid4(),
         organization_id=org.id,
@@ -134,35 +146,56 @@ async def register_org_and_admin(
     db.add(admin)
     await db.flush()
 
-    # Create wallet
-    from app.services.wallet_service import get_or_create_wallet
-    wallet = await get_or_create_wallet(str(org.id), db)
+    print(f"[REGISTER]    Admin user: {admin.email} | org_id: {org.id}")
 
-    if data.initial_minutes > 0:
-        wallet.minutes_balance         = data.initial_minutes
-        wallet.rate_per_minute         = data.rate_per_minute
-        wallet.total_minutes_purchased = data.initial_minutes
-        db.add(WalletTransaction(
-            wallet_id=wallet.id, transaction_type="credit",
-            amount_inr=0.0, rate_per_minute=data.rate_per_minute,
-            minutes=data.initial_minutes, balance_after=data.initial_minutes,
-            description="Initial minutes at registration",
-        ))
+    # ── Step 4: Wallet — only for new orgs ────────────────────────────────
+    if org_is_new:
+        from app.services.wallet_service import get_or_create_wallet
+        wallet = await get_or_create_wallet(str(org.id), db)
+
+        if data.initial_minutes > 0:
+            wallet.minutes_balance         = data.initial_minutes
+            wallet.rate_per_minute         = data.rate_per_minute
+            wallet.total_minutes_purchased = data.initial_minutes
+            db.add(WalletTransaction(
+                wallet_id=wallet.id,
+                transaction_type="credit",
+                amount_inr=0.0,
+                rate_per_minute=data.rate_per_minute,
+                minutes=data.initial_minutes,
+                balance_after=data.initial_minutes,
+                description="Initial minutes at registration",
+            ))
 
     await db.commit()
     await db.refresh(org)
     await db.refresh(admin)
 
     return {
-        "message": "Organization and admin created successfully.",
-        "organization":       {"id": str(org.id), "name": org.name, "slug": org.slug},
-        "admin_user":         {"id": str(admin.id), "email": admin.email, "role": admin.role.value},
-        "wallet":             {"minutes_loaded": data.initial_minutes, "rate_per_minute": data.rate_per_minute},
-        "login_credentials":  {"org_slug": org.slug, "email": admin.email,
-                               "note": "Share credentials securely. Admin should change password after first login."},
+        "message": "Admin user created successfully.",
+        "organization": {
+            "id":      str(org.id),
+            "name":    org.name,
+            "slug":    org.slug,
+            "is_new":  org_is_new,
+        },
+        "admin_user": {
+            "id":         str(admin.id),
+            "email":      admin.email,
+            "first_name": admin.first_name,
+            "last_name":  admin.last_name,
+            "role":       admin.role.value,
+        },
+        "wallet": {
+            "minutes_loaded":  data.initial_minutes if org_is_new else "using existing wallet",
+            "rate_per_minute": data.rate_per_minute  if org_is_new else "using existing rate",
+        },
+        "login_credentials": {
+            "org_slug": org.slug,
+            "email":    admin.email,
+            "note":     "Share credentials securely. Admin should change password after first login.",
+        },
     }
-
-
 # ── Organizations ─────────────────────────────────────────────────────────────
 
 @router.get("/organizations")
@@ -212,8 +245,8 @@ async def get_organization(org_id: UUID, db: AsyncSession = Depends(get_db), _: 
                    "last_login_at": u.last_login_at} for u in users],
         "campaigns": [{"id": str(c.id), "name": c.name,
                        "status": c.status.value if hasattr(c.status, "value") else c.status} for c in campaigns],
-        "stats": {"total_users": len(users), "total_campaigns": len(campaigns),
-                  "total_calls": total_calls or 0, "total_minutes": round(int(total_duration or 0) / 60, 1)},
+        "stats": {"total_users": len(users), "total_campaigns": len(campaigns),"total_calls": total_calls or 0,
+                   "total_minutes": wallet.total_minutes_used if wallet else 0},
         "wallet": {"minutes_balance": wallet.minutes_balance if wallet else 0,
                    "total_minutes_used": wallet.total_minutes_used if wallet else 0,
                    "total_amount_paid": wallet.total_amount_paid if wallet else 0.0,
@@ -275,13 +308,21 @@ async def org_campaigns(org_id: UUID, db: AsyncSession = Depends(get_db), _: Use
         call_count   = await db.scalar(select(func.count(CallLog.id)).where(CallLog.campaign_id == c.id))
         duration_sum = await db.scalar(select(func.coalesce(func.sum(CallLog.duration), 0)).where(CallLog.campaign_id == c.id))
         leads_count  = await db.scalar(select(func.count(Lead.id)).where(Lead.campaign_id == c.id))
+        billed = await db.scalar(
+            select(func.coalesce(func.sum(WalletTransaction.minutes), 0))
+            .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
+            .where(Wallet.organization_id == org_id)
+            .where(WalletTransaction.call_log_id.in_(
+                select(CallLog.id).where(CallLog.campaign_id == c.id)
+            ))
+        )
         result.append({
             "id": str(c.id), "name": c.name,
             "status": c.status.value if hasattr(c.status, "value") else c.status,
             "created_at": c.created_at,
             "stats": {"total_leads": leads_count or 0, "total_calls": call_count or 0,
-                      "total_minutes": round(int(duration_sum or 0) / 60, 1)},
-        })
+            "total_minutes": billed or 0},
+            })
     return {"org_name": org.name, "total": len(campaigns), "campaigns": result}
 
 
@@ -300,7 +341,14 @@ async def org_minutes(org_id: UUID, db: AsyncSession = Depends(get_db), _: User 
     for c in campaigns:
         duration_sum = await db.scalar(select(func.coalesce(func.sum(CallLog.duration), 0)).where(CallLog.campaign_id == c.id))
         call_count   = await db.scalar(select(func.count(CallLog.id)).where(CallLog.campaign_id == c.id))
-        minutes_used = round(int(duration_sum or 0) / 60, 2)
+        minutes_used = await db.scalar(
+            select(func.coalesce(func.sum(WalletTransaction.minutes), 0))
+            .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
+            .where(Wallet.organization_id == org_id)
+            .where(WalletTransaction.call_log_id.in_(
+                select(CallLog.id).where(CallLog.campaign_id == c.id)
+            ))
+    ) or 0
         breakdown.append({
             "campaign_id": str(c.id), "campaign_name": c.name,
             "total_calls": call_count or 0, "duration_sec": int(duration_sum or 0),

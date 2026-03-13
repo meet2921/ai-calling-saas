@@ -18,7 +18,7 @@ from starlette.exceptions import HTTPException
 BOLNA_API_KEY = os.getenv("BOLNA_API_KEY")
 BOLNA_BASE_URL = os.getenv("BOLNA_API_URL", "https://api.bolna.ai/v2")
 BOLNA_MAKE_CALL_URL = os.getenv("BOLNAMAKE_CALL_URL", "https://api.bolna.ai")
-WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://matrilineal-hipshot-charlyn.ngrok-free.dev")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "https://unantagonized-morton-twopenny.ngrok-free.dev")
 
 
 def _extract_call_id(data):
@@ -80,7 +80,7 @@ async def get_agent_details(agent_id: str):
 
     return response.json()
 
-def make_call(
+async def make_call(
     db: AsyncSession,
     phone: str,
     agent_id: str,
@@ -113,23 +113,19 @@ def make_call(
     if response.status_code >= 400:
         raise Exception(f"Bolna error: {response.text}")
 
-    try:
-        data = response.json()
-    except ValueError:
-        raise Exception(f"Bolna returned non-JSON response: {response.text}")
+    data = response.json()
 
-    # 🔥 Extract call_id (robustly handle several response shapes)
     call_id = _extract_call_id(data)
 
     if not call_id:
         raise Exception(f"Bolna did not return call_id. Response body: {response.text}")
 
-    # 🔥 Update Lead with external_call_id
-    lead =  db.get(Lead, lead_id)
+    # Update lead
+    lead = await db.get(Lead, lead_id)
     if lead:
         lead.external_call_id = call_id
 
-    # 🔥 Create CallLog immediately (CRITICAL)
+    # Create call log
     call_log = CallLog(
         external_call_id=call_id,
         campaign_id=campaign_id,
@@ -141,7 +137,8 @@ def make_call(
     )
 
     db.add(call_log)
-    db.flush()   # ensures INSERT happens immediately
-    db.commit()
+
+    await db.flush()
+    await db.commit()
 
     return data

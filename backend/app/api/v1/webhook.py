@@ -1,15 +1,16 @@
-from fastapi import APIRouter, Depends, Request, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime
 import json
 import logging
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Request, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
 from app.models.campaigns import Campaign
-from app.core.deps import get_current_user
+from app.models.wallet import WalletTransaction
 from app.services.wallet_service import deduct_minutes_for_call
 
 router = APIRouter()
@@ -21,9 +22,8 @@ async def bolna_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+
     raw_body = await request.body()
-    print("HEADERS:", dict(request.headers))
-    print("RAW BODY:", raw_body.decode(errors="ignore"))
 
     if not raw_body:
         logger.warning("Bolna webhook received empty body")
@@ -32,37 +32,35 @@ async def bolna_webhook(
     try:
         payload = json.loads(raw_body)
     except json.JSONDecodeError:
-        logger.error("Bolna webhook invalid JSON", extra={"body": raw_body})
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        logger.error("Invalid JSON payload")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
 
     logger.info("Bolna webhook received", extra={"payload": payload})
 
-    # Handle wrapper
-    root_payload = payload  # preserve original
-
+    root_payload = payload
     event_type = root_payload.get("event")
 
     if "data" in root_payload and isinstance(root_payload["data"], dict):
         payload = root_payload["data"]
-    else:
-        payload = root_payload
 
     if event_type and not event_type.startswith("call"):
         return {"status": "ignored", "reason": f"event {event_type} not processed"}
 
     # -------------------------
-    # 3. Extract Identifiers (call_id first, it's mandatory for idempotency)
+    # Extract Call ID
     # -------------------------
+
     call_id = payload.get("call_id") or payload.get("id")
     status_value = payload.get("status")
 
     if not call_id:
-        logger.warning("Bolna webhook missing call_id", extra={"payload": payload})
-        return {"status": "ignored", "reason": "missing call_id"}
+        logger.warning("Missing call_id")
+        return {"status": "ignored", "reason": "missing_call_id"}
 
     # -------------------------
-    # Extract phone number early for lead lookup
+    # Extract Phone
     # -------------------------
+
     user_number = (
         payload.get("user_number")
         or payload.get("phone_number")
@@ -71,118 +69,92 @@ async def bolna_webhook(
         or payload.get("telephony_data", {}).get("to_number")
     )
 
-    # Try to get campaign_id and lead_id from payload or metadata first
-    metadata = (
-        payload.get("metadata")
-        or root_payload.get("metadata")
-        or {}
-    )
+    metadata = payload.get("metadata") or root_payload.get("metadata") or {}
 
-    campaign_id = (
-        payload.get("campaign_id")
-        or metadata.get("campaign_id")
-    )
+    lead_id = metadata.get("lead_id")
+    campaign_id = metadata.get("campaign_id")
 
-    lead_id = (
-        payload.get("lead_id")
-        or metadata.get("lead_id")
-    )
+    lead_obj = None
 
-    # Fallback 1: look up by external_call_id (set when call was initiated)
-    if not campaign_id and not lead_id:
-        try:
-            result = await db.execute(
-                select(Lead).where(Lead.external_call_id == call_id)
-            )
-            lead_obj = result.scalar_one_or_none()
-            if lead_obj:
-                campaign_id = str(lead_obj.campaign_id)
-                lead_id = str(lead_obj.id)
-                logger.info(
-                    "Found lead via external_call_id",
-                    extra={"call_id": call_id, "lead_id": lead_id, "campaign_id": campaign_id}
-                )
-        except Exception as e:
-            logger.warning("Failed to lookup lead by external_call_id", extra={"error": str(e)})
+    # -------------------------
+    # Lead Lookup Strategy
+    # -------------------------
 
-    # Fallback 2: look up by phone number (matches campaign leads)
-    if not campaign_id and not lead_id and user_number:
-        # Phone numbers in leads table are stored without country code (e.g., "7284885875")
-        # but webhook sends full international format (e.g., "+917284885875")
-        # Extract just the local number part
+    if lead_id:
+        lead_obj = await db.get(Lead, lead_id)
+
+    if not lead_obj:
+        result = await db.execute(
+            select(Lead).where(Lead.external_call_id == call_id)
+        )
+        lead_obj = result.scalar_one_or_none()
+
+    if not lead_obj and user_number:
+
         clean_phone = user_number.lstrip("+").replace(" ", "").replace("-", "")
-        
-        # For India (+91), remove country code to get local number
+
         if clean_phone.startswith("91") and len(clean_phone) > 10:
-            local_phone = clean_phone[2:]  # Remove "91"
+            local_phone = clean_phone[2:]
         else:
             local_phone = clean_phone
-        
-        phone_variants = [local_phone, clean_phone, user_number]  # Try all variants
-        
-        logger.info(
-            "Looking up lead by phone",
-            extra={
-                "user_number": user_number,
-                "local_phone": local_phone,
-                "variants": phone_variants
-            }
-        )
-        
+
+        phone_variants = [local_phone, clean_phone, user_number]
+
         for phone_variant in phone_variants:
-            try:
-                result = await db.execute(
-                    select(Lead).where(Lead.phone == phone_variant)
-                )
-                lead_obj = result.scalar_one_or_none()
-                if lead_obj:
-                    campaign_id = str(lead_obj.campaign_id)
-                    lead_id = str(lead_obj.id)
-                    # Update lead's external_call_id for future reference
-                    lead_obj.external_call_id = call_id
-                    logger.info(
-                        "Found lead via phone number",
-                        extra={
-                            "phone_variant": phone_variant,
-                            "lead_id": lead_id,
-                            "campaign_id": campaign_id,
-                        }
-                    )
-                    break  # Found it, stop searching
-            except Exception as e:
-                logger.warning(
-                    "Failed to lookup lead by phone variant",
-                    extra={"error": str(e), "phone": phone_variant}
-                )
 
-    if not campaign_id:
-        logger.warning(
-            "Bolna webhook campaign_id not provided and lead not found; storing null",
-            extra={"user_number": user_number, "call_id": call_id}
-        )
+            result = await db.execute(
+                select(Lead).where(Lead.phone == phone_variant)
+            )
+
+            lead_obj = result.scalars().first()
+
+            if lead_obj:
+                logger.info(
+                    "Lead resolved via phone",
+                    extra={
+                        "phone_variant": phone_variant,
+                        "lead_id": lead_obj.id
+                    }
+                )
+                break
+
+    if lead_obj and not lead_id:
+        lead_id = str(lead_obj.id)
+
+    if lead_obj and not campaign_id:
+        campaign_id = str(lead_obj.campaign_id)
 
     # -------------------------
-    # Normalize fields
-    # -------------------------
-
     # Duration
+    # -------------------------
+
     duration = payload.get("conversation_duration")
+
     if duration is None:
         duration = payload.get("telephony_data", {}).get("duration", 0)
 
     try:
         duration = float(duration or 0)
-    except (ValueError, TypeError):
+    except Exception:
         duration = 0.0
 
+    # -------------------------
     # Cost
+    # -------------------------
+
     cost = payload.get("total_cost", 0)
+
     try:
         cost = float(cost or 0)
-    except (ValueError, TypeError):
+    except Exception:
         cost = 0.0
 
+    # -------------------------
+    # Appointment
+    # -------------------------
+
     appointment_date = payload.get("appointment_date")
+
     if appointment_date:
         try:
             appointment_date = datetime.fromisoformat(appointment_date)
@@ -190,18 +162,31 @@ async def bolna_webhook(
             appointment_date = None
 
     # -------------------------
-    # Idempotency Check
+    # Find CallLog FIRST
     # -------------------------
+
     result = await db.execute(
         select(CallLog).where(CallLog.external_call_id == call_id)
     )
+
     existing_log = result.scalar_one_or_none()
 
     try:
 
-        # ------------------------------------------------
-        # CASE 1: CallLog already exists → UPDATE
-        # ------------------------------------------------
+        # -------------------------
+        # IMPORTANT FIX
+        # -------------------------
+        # If CallLog exists → trust it as source of truth
+        # -------------------------
+
+        if existing_log:
+            campaign_id = str(existing_log.campaign_id)
+            lead_id = str(existing_log.lead_id)
+
+        # -------------------------
+        # Update existing CallLog
+        # -------------------------
+
         if existing_log:
 
             existing_log.duration = duration
@@ -209,38 +194,29 @@ async def bolna_webhook(
             existing_log.status = status_value
             existing_log.recording_url = payload.get("telephony_data", {}).get("recording_url")
             existing_log.transcript = payload.get("transcript")
-            existing_log.customer_sentiment = (
-                payload.get("extracted_data", {}) or {}
-            ).get("customer_sentiment")
-            existing_log.interest_level = (
-                payload.get("extracted_data", {}) or {}
-            ).get("interest_level")
-            existing_log.final_call_summary = payload.get("summary")
             existing_log.summary = payload.get("summary")
+            existing_log.final_call_summary = payload.get("summary")
             existing_log.transfer_call = payload.get("transfer_call", False)
 
-            if campaign_id:
-                existing_log.campaign_id = campaign_id
-            if lead_id:
-                existing_log.lead_id = lead_id
+            extracted = payload.get("extracted_data", {}) or {}
 
-        # ------------------------------------------------
-        # CASE 2: CallLog does NOT exist (race condition)
-        # ------------------------------------------------
+            existing_log.customer_sentiment = extracted.get("customer_sentiment")
+            existing_log.interest_level = extracted.get("interest_level")
+
+        # -------------------------
+        # Create CallLog if missing
+        # -------------------------
+
         else:
 
-            # Only create if we successfully resolved lead_id
             if not lead_id:
                 logger.warning(
-                    "CallLog missing and lead not resolved. Ignoring.",
+                    "CallLog missing and lead not resolved",
                     extra={"call_id": call_id}
                 )
-                return {"status": "ignored", "reason": "call_log_not_found"}
+                return {"status": "ignored"}
 
-            logger.warning(
-                "CallLog not found. Creating from webhook (race condition fix).",
-                extra={"call_id": call_id}
-            )
+            logger.warning("Creating CallLog from webhook")
 
             new_log = CallLog(
                 external_call_id=call_id,
@@ -266,13 +242,17 @@ async def bolna_webhook(
 
             db.add(new_log)
 
-        # ------------------------------------------------
-        # Update Lead status safely
-        # ------------------------------------------------
+        # -------------------------
+        # Update Lead Status
+        # -------------------------
+
         if lead_id:
+
             lead = await db.get(Lead, lead_id)
+
             if lead:
-                bolna_to_lead_status = {
+
+                status_map = {
                     "initiated": "calling",
                     "in-progress": "calling",
                     "ringing": "calling",
@@ -281,54 +261,55 @@ async def bolna_webhook(
                     "no-answer": "failed",
                     "failed": "failed",
                 }
-                lead_status = bolna_to_lead_status.get(status_value, "calling")
+
+                lead_status = status_map.get(status_value, "calling")
+
                 lead.status = LeadStatus(lead_status)
                 lead.external_call_id = call_id
 
-        # ------------------------------------------------
-        # Deduct minutes from wallet after call ends
-        # ------------------------------------------------
-        # Only deduct on UPDATE (existing_log), never on CREATE
-        # This prevents double-deduction when Bolna sends multiple webhooks
-        if existing_log and status_value in ("completed", "call-disconnected") and duration > 0:
-            if campaign_id:
-                # Check if we already deducted for this call_log
-                from app.models.wallet import WalletTransaction
-                already_deducted = await db.scalar(
-                    select(func.count()).select_from(WalletTransaction)
-                    .where(WalletTransaction.call_log_id == existing_log.id)
+        # -------------------------
+        # Wallet Deduction
+        # -------------------------
+
+        if existing_log and duration > 0 and campaign_id:
+
+            already_deducted = await db.scalar(
+                select(func.count())
+                .select_from(WalletTransaction)
+                .where(WalletTransaction.call_log_id == existing_log.id)
+            )
+
+            if already_deducted == 0:
+
+                campaign_result = await db.execute(
+                    select(Campaign).where(Campaign.id == campaign_id)
                 )
 
-                if already_deducted == 0:
-                    try:
-                        campaign_result = await db.execute(
-                            select(Campaign).where(Campaign.id == campaign_id)
-                        )
-                        campaign_obj = campaign_result.scalar_one_or_none()
+                campaign_obj = campaign_result.scalar_one_or_none()
 
-                        if campaign_obj:
-                            deduction = await deduct_minutes_for_call(
-                                organization_id=str(campaign_obj.organization_id),
-                                duration_seconds=duration,
-                                call_log_id=str(existing_log.id),
-                                db=db
-                            )
-                            logger.warning(
-                                f"Minutes deducted | Call: {call_id} | "
-                                f"Duration: {duration}s | "
-                                f"Deducted: {deduction['minutes_deducted']} min | "
-                                f"Remaining: {deduction['new_balance']} min"
-                            )
-                        else:
-                            logger.warning(f"Campaign {campaign_id} not found — skipping wallet deduction")
+                if campaign_obj:
 
-                    except Exception as e:
-                        logger.error(f"Wallet deduction failed for call {call_id}: {e}")
-                else:
-                    logger.info(f"Skipping deduction — already deducted for call {call_id}")
+                    deduction = await deduct_minutes_for_call(
+                        organization_id=str(campaign_obj.organization_id),
+                        duration_seconds=duration,
+                        call_log_id=str(existing_log.id),
+                        db=db
+                    )
+
+                    logger.info(
+                        f"Minutes deducted | Call {call_id} | "
+                        f"Duration {duration}s | "
+                        f"Deducted {deduction['minutes_deducted']} min"
+                    )
+
         await db.commit()
 
     except Exception:
+
         await db.rollback()
-        logger.exception("Failed to process Bolna webhook update")
+
+        logger.exception("Webhook processing failed")
+
         raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+    return {"status": "success"}

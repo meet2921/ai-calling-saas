@@ -135,12 +135,14 @@ class Organization(Base):
     )
     # One org has many users
     users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
-    wallet = relationship("Wallet", back_populates="organization", uselist=False)
+    # Fixed — tells ORM to delete wallet when org is deleted
+    wallet = relationship("Wallet", back_populates="organization", uselist=False, cascade="all, delete-orphan")
+
     
     __table_args__ = (
         Index("ix_organizations_slug_active", "slug", "is_active"),
         {"comment": "Multi-tenant SaaS organizations"},
     )
-    
+
     def __repr__(self) -> str:
         return f"<Organization id={self.id} slug={self.slug!r} active={self.is_active}>"
