@@ -112,4 +112,8 @@ async def get_wallet_summary(
         "total_amount_paid": wallet.total_amount_paid,
         "estimated_cost_remaining": estimated_cost_remaining,
         "billed_minutes": billed_minutes,
+<<<<<<< HEAD
     }
+=======
+    }
+>>>>>>> 2b26161fa37ee85b0d6248c4f9853399ba71fd6c
