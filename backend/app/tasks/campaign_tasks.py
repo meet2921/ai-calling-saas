@@ -54,28 +54,45 @@ def process_campaign(self, campaign_id: str):
                     print("Campaign paused during execution")
                     break
 
+                # -----------------------------
+                # WALLET SAFETY CHECK
+                # -----------------------------
+
                 wallet = db.query(Wallet).filter(
                     Wallet.organization_id == campaign.organization_id
-                ).first()
+                ).with_for_update().first()
 
                 if not wallet or wallet.minutes_balance <= 0:
+
                     print(
                         f"Campaign {campaign_id} stopped — "
                         f"insufficient balance"
                     )
+
                     campaign.status = CampaignStatus.paused
                     campaign.is_processing = False
                     db.commit()
-                    return 
+                    return
 
                 try:
-                    # Mark as queued
+
+                    # -----------------------------
+                    # RESERVE 1 MINUTE (pre-call)
+                    # -----------------------------
+
+                    wallet.minutes_balance -= 1
+                    db.commit()
+
+                    # Mark lead queued
                     lead.status = LeadStatus.QUEUED
                     db.commit()
 
                     formatted_phone = f"+91{lead.phone}"
 
-                    # Make call
+                    # -----------------------------
+                    # MAKE CALL
+                    # -----------------------------
+
                     response = make_call(
                         db=db,
                         phone=formatted_phone,
@@ -85,13 +102,16 @@ def process_campaign(self, campaign_id: str):
                     )
 
                     # SUCCESS
+
                     lead.external_call_id = response.get("call_id")
                     lead.status = LeadStatus.COMPLETED
                     lead.attempts += 1
-                    lead.retry_count = 0  # reset on success
+                    lead.retry_count = 0
+
                     db.commit()
 
                 except Exception as e:
+
                     print(f"Call failed for {lead.phone}: {str(e)}")
 
                     lead.attempts += 1
@@ -104,16 +124,21 @@ def process_campaign(self, campaign_id: str):
 
                     db.commit()
 
-                # Rate limit
+                # -----------------------------
+                # RATE LIMIT
+                # -----------------------------
+
                 time.sleep(campaign.call_delay_seconds)
 
         print("Campaign execution stopped safely")
 
     except Exception as exc:
+
         print("Critical task error:", str(exc))
         self.retry(exc=exc, countdown=5)
 
     finally:
+
         campaign = db.query(Campaign).filter(
             Campaign.id == UUID(campaign_id)
         ).first()
