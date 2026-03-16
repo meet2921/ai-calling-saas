@@ -5,6 +5,7 @@ from datetime import timedelta, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from numpy import exp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -193,11 +194,17 @@ async def logout(
         try:
             payload = decode_token(raw)
             jti = payload.get("jti")
-            if jti:
-                ttl = int(payload.get("exp", 0) - time.time())
-                await blacklist_token(redis, jti, max(ttl, 1))
-        except Exception:
-            pass
+            exp = payload.get("exp")
+
+            if not jti or not exp:
+                continue
+
+            ttl = int(exp - time.time())
+            await blacklist_token(redis, jti, max(ttl, 1))
+
+        except ValueError:
+            print("[LOGOUT] ⚠️ Invalid token ignored")
+
 
     print(f"[LOGOUT] ✅ {current_user.email}")
     return MsgResponse(message="Logged out successfully.")

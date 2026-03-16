@@ -1,6 +1,6 @@
 import uuid
 import bcrypt
-from jose import jwt,  JWTError
+from jose import jwt,  JWTError, ExpiredSignatureError
 from datetime import datetime, timedelta,timezone
 from dotenv import load_dotenv
 from passlib.context import CryptContext
@@ -54,7 +54,11 @@ def decode_token(token: str) -> dict:
         )
         return payload
     except JWTError:
-        raise ValueError("Invalid or expired token")
+        raise ValueError("Invalid token")
+    
+    except ExpiredSignatureError:
+        raise ValueError("Token expired")
+    
 # ─── Redis blacklist helpers ──────────────────────────────────────────────────
 
 async def blacklist_token(redis, jti: str, ttl_seconds: int) -> None:
