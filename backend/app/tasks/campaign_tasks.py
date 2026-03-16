@@ -1,5 +1,7 @@
 import time
+import asyncio
 from uuid import UUID
+
 from app.core.celery_app import celery_app
 from app.db.sync_session import SessionLocal
 from app.models.campaigns import Campaign, CampaignStatus
@@ -93,12 +95,13 @@ def process_campaign(self, campaign_id: str):
                     # MAKE CALL
                     # -----------------------------
 
-                    response = make_call(
-                        db=db,
-                        phone=formatted_phone,
-                        agent_id=campaign.bolna_agent_id,
-                        campaign_id=campaign.id,
-                        lead_id=lead.id
+                    response = asyncio.run(
+                        make_call(
+                            phone=formatted_phone,
+                            agent_id=campaign.bolna_agent_id,
+                            campaign_id=campaign.id,
+                            lead_id=lead.id
+                        )
                     )
 
                     # SUCCESS
