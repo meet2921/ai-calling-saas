@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
-
+from pydantic import BaseModel, Field
 
 # ✅ 1️⃣ Campaign Status Enum
 class CampaignStatus(str, Enum):
@@ -19,7 +19,7 @@ class CampaignStatus(str, Enum):
 class CampaignCreate(BaseModel):
     name: str
     description: str | None = None
-    bolna_agent_id: str | None = None
+    bolna_agent_id: str
 
 
 # ✅ 3️⃣ Status Update Schema (NEW for Step 2)

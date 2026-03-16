@@ -214,3 +214,36 @@ async def get_me(
         "last_name": current_user.last_name,
         "role": current_user.role,
     }
+
+@router.put("/profile")
+async def update_profile(
+    data: UserProfileUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Update email
+    if data.email:
+        current_user.email = data.email
+
+    
+
+    # Update first name
+    if data.first_name:
+        current_user.first_name = data.first_name
+
+    # Update last name
+    if data.last_name:
+        current_user.last_name = data.last_name
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return {
+        "message": "Profile updated successfully",
+        "user": {
+            "id": str(current_user.id),
+            "email": current_user.email,
+            "first_name": current_user.first_name,
+            "last_name": current_user.last_name,
+        }
+    }

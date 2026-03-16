@@ -36,7 +36,7 @@ async def get_authorized_campaign(
 
     return campaign
 
-router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
+router = APIRouter(tags=["Campaigns"])
 
 @router.post("/", response_model=CampaignResponse)
 async def create_campaign(
@@ -44,6 +44,22 @@ async def create_campaign(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
+     # 🔹 Check if agent ID is empty
+    if not campaign_data.bolna_agent_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Bolna agent ID required"
+        )
+
+    # 🔹 Validate agent from Bolna
+    agent = await get_agent_details(campaign_data.bolna_agent_id)
+
+    if not agent:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Bolna agent ID"
+        )
+    
     campaign = Campaign(
         name=campaign_data.name,
         description=campaign_data.description,
