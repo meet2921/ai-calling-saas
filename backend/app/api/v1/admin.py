@@ -35,7 +35,6 @@ from app.models.campaigns import Campaign
 from app.models.call_logs import CallLog
 from app.models.lead import Lead
 from app.models.wallet import Wallet, WalletTransaction
-from app.services.wallet_service import get_or_create_wallet
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Super Admin"])
 
@@ -50,7 +49,7 @@ class RegisterAdminRequest(BaseModel):
     email:           EmailStr
     password:        str      = Field(..., min_length=8)
     initial_minutes: int      = Field(default=0, ge=0)
-    rate_per_minute: float    = Field(default=0, gt=0)
+    rate_per_minute: float    = Field(default=0.50, gt=0)
 
     @field_validator("org_slug")
     @classmethod
@@ -151,6 +150,7 @@ async def register_org_and_admin(
 
     # ── Step 4: Wallet — only for new orgs ────────────────────────────────
     if org_is_new:
+        from app.services.wallet_service import get_or_create_wallet
         wallet = await get_or_create_wallet(str(org.id), db)
 
         if data.initial_minutes > 0:
@@ -196,7 +196,6 @@ async def register_org_and_admin(
             "note":     "Share credentials securely. Admin should change password after first login.",
         },
     }
-
 # ── Organizations ─────────────────────────────────────────────────────────────
 
 @router.get("/organizations")

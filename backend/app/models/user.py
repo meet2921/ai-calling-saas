@@ -5,11 +5,11 @@ from sqlalchemy import String, Boolean, DateTime, ForeignKey, Enum as SAEnum, fu
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import mapped_column, Mapped, relationship
 from app.models.base import Base
+from app.models.campaigns import Campaign 
 
 class UserRole(str, enum.Enum):
-    AGENT = "agent"
-    OWNER = "owner"
-    ADMIN = "admin"
+    SUPER_ADMIN = "super_admin"   # You — platform owner, access to /admin/* panel
+    ADMIN       = "admin"         # Your SaaS customers — one per organization
 
 class User(Base):
     __tablename__ = "users"
@@ -26,26 +26,20 @@ class User(Base):
         nullable=False
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4
-    )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False
-    )
     email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole), nullable=False, default=UserRole.AGENT )
+    role: Mapped[UserRole] = mapped_column(SAEnum(UserRole, name="userrole"), nullable=False, default=UserRole.ADMIN )
     first_name: Mapped[str] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # role: Mapped[str] = mapped_column(String(50),nullable=False,default=UserRole.AGENT,server_default="agent")
+    updated_at = mapped_column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now())
+    last_login_at = mapped_column(DateTime(timezone=True),nullable=True)
+
     # Many users belong to one org
     organization = relationship("Organization", back_populates="users")
 
     def __repr__(self):
-        return f"<User {self.email}>"
+        return f"<User {self.email} role={self.role}>"
