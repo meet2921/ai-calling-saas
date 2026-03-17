@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+import logging
+import os
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.campaigns import router as campaign_router
@@ -14,6 +15,16 @@ from app.core.config import settings
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Configure logging to file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("call_logs.log"),
+        logging.StreamHandler()
+    ]
+)
 
 app = FastAPI(title="AI Calling SaaS", docs_url="/docs")
 

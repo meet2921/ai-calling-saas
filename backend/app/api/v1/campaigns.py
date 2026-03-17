@@ -195,3 +195,31 @@ async def delete_campaign(
     await db.commit()
 
     return {"message": "Campaign deleted successfully"}
+
+@router.put("/{campaign_id}/update", response_model=CampaignResponse)
+async def update_campaign(
+    campaign_id: UUID,
+    campaign_data: CampaignCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    stmt = select(Campaign).where(
+        Campaign.id == campaign_id,
+        Campaign.organization_id == current_user.organization_id
+    )
+
+    result = await db.execute(stmt)
+    campaign = result.scalar_one_or_none()
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    campaign.name = campaign_data.name
+    campaign.description = campaign_data.description
+    campaign.bolna_agent_id = campaign_data.bolna_agent_id
+
+    db.add(campaign)
+    await db.commit()
+    await db.refresh(campaign)
+
+    return campaign

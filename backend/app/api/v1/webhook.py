@@ -258,6 +258,19 @@ async def bolna_webhook(
                 lead.status = LeadStatus(lead_status)
                 lead.external_call_id = call_id
 
+                # Log call failures or rejections
+                if status_value in ["failed", "no-answer", "call-disconnected"]:
+                    logger.error(
+                        f"Call System--> Call rejected by user--> Logged correctly",
+                        extra={
+                            "call_id": call_id,
+                            "lead_id": lead_id,
+                            "campaign_id": campaign_id,
+                            "user_number": user_number,
+                            "status": status_value
+                        }
+                    )
+
         # ── Deduct Minutes from Wallet ────────────────────
         # active_log covers both existing and newly created logs
         # double deduction check prevents charging twice
