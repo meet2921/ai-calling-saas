@@ -5,6 +5,7 @@ aicall-saas
 *.pyc
 .env
 call_ai
+call_logs.log
 
 
 # Python
