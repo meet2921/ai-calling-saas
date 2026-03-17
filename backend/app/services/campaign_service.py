@@ -24,7 +24,7 @@ async def get_campaign_or_404(db: AsyncSession, campaign_id: UUID):
 async def start_campaign(db: AsyncSession, campaign_id: UUID):
     campaign = await get_campaign_or_404(db, campaign_id)
 
-    if campaign.status not in [CampaignStatus.draft, CampaignStatus.paused]:
+    if campaign.status not in [CampaignStatus.draft, CampaignStatus.paused, CampaignStatus.completed]:
         raise HTTPException(400, "Cannot start campaign from this state")
 
     if campaign.is_processing:

@@ -12,7 +12,7 @@ from sqlalchemy import func
 from app.db.session import get_db
 from app.models.lead import Lead, LeadStatus
 from app.models.call_logs import CallLog
-from app.models.campaigns import Campaign
+from app.models.campaigns import Campaign, CampaignStatus
 from app.core.deps import get_current_user
 
 router = APIRouter()
@@ -119,6 +119,12 @@ async def upload_leads_csv(
             status_code=400,
             detail="Duplicate phone found in database"
         )
+
+    # If the campaign was previously completed, reset it to draft so it can be restarted
+    # when new leads are added.
+    if campaign.status == CampaignStatus.completed:
+        campaign.status = CampaignStatus.draft
+        await db.commit()
 
     return {
         "message": "Leads uploaded successfully",
