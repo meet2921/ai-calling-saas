@@ -46,18 +46,40 @@ async def create_campaign(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    campaign = Campaign(
-        name=campaign_data.name,
-        description=campaign_data.description,
-        organization_id=current_user.organization_id,
-        bolna_agent_id=campaign_data.bolna_agent_id
-    )
+    
+    if not campaign_data.bolna_agent_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Bolna agent ID required"
+        )
 
-    db.add(campaign)
-    await db.commit()
-    await db.refresh(campaign)
+    try:
+        agent = await get_agent_details(campaign_data.bolna_agent_id)
 
-    return campaign
+        if not agent:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Bolna agent ID"
+            )
+            
+        campaign = Campaign(
+            name=campaign_data.name,
+            description=campaign_data.description,
+            organization_id=current_user.organization_id,
+            bolna_agent_id=campaign_data.bolna_agent_id
+        )
+
+        db.add(campaign)
+        await db.commit()
+        await db.refresh(campaign)
+
+        return campaign
+    
+    except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Error occurred while fetching Bolna agent details"
+            )
 
 @router.get("/", response_model=list[CampaignResponse])
 async def list_campaigns(
@@ -214,12 +236,36 @@ async def update_campaign(
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    campaign.name = campaign_data.name
-    campaign.description = campaign_data.description
-    campaign.bolna_agent_id = campaign_data.bolna_agent_id
+    # ✅ 🔥 SAME VALIDATION AS CREATE
 
-    db.add(campaign)
-    await db.commit()
-    await db.refresh(campaign)
+    if not campaign_data.bolna_agent_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Bolna agent ID required"
+        )
 
-    return campaign
+    try:
+        agent = await get_agent_details(campaign_data.bolna_agent_id)
+
+        if not agent:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Bolna agent ID"
+            )
+
+
+        campaign.name = campaign_data.name
+        campaign.description = campaign_data.description
+        campaign.bolna_agent_id = campaign_data.bolna_agent_id
+
+        db.add(campaign)
+        await db.commit()
+        await db.refresh(campaign)
+
+        return campaign
+    
+    except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Error occurred while fetching Bolna agent details"
+            )
