@@ -245,8 +245,8 @@ async def get_organization(org_id: UUID, db: AsyncSession = Depends(get_db), _: 
                    "last_login_at": u.last_login_at} for u in users],
         "campaigns": [{"id": str(c.id), "name": c.name,
                        "status": c.status.value if hasattr(c.status, "value") else c.status} for c in campaigns],
-        "stats": {"total_users": len(users), "total_campaigns": len(campaigns),"total_calls": total_calls or 0,
-                   "total_minutes": wallet.total_minutes_used if wallet else 0},
+        "stats": {"total_users": len(users), "total_campaigns": len(campaigns),
+                  "total_calls": total_calls or 0, "total_minutes": round(int(total_duration or 0) / 60, 1)},
         "wallet": {"minutes_balance": wallet.minutes_balance if wallet else 0,
                    "total_minutes_used": wallet.total_minutes_used if wallet else 0,
                    "total_amount_paid": wallet.total_amount_paid if wallet else 0.0,
@@ -308,21 +308,13 @@ async def org_campaigns(org_id: UUID, db: AsyncSession = Depends(get_db), _: Use
         call_count   = await db.scalar(select(func.count(CallLog.id)).where(CallLog.campaign_id == c.id))
         duration_sum = await db.scalar(select(func.coalesce(func.sum(CallLog.duration), 0)).where(CallLog.campaign_id == c.id))
         leads_count  = await db.scalar(select(func.count(Lead.id)).where(Lead.campaign_id == c.id))
-        billed = await db.scalar(
-            select(func.coalesce(func.sum(WalletTransaction.minutes), 0))
-            .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
-            .where(Wallet.organization_id == org_id)
-            .where(WalletTransaction.call_log_id.in_(
-                select(CallLog.id).where(CallLog.campaign_id == c.id)
-            ))
-        )
         result.append({
             "id": str(c.id), "name": c.name,
             "status": c.status.value if hasattr(c.status, "value") else c.status,
             "created_at": c.created_at,
             "stats": {"total_leads": leads_count or 0, "total_calls": call_count or 0,
-            "total_minutes": billed or 0},
-            })
+                      "total_minutes": round(int(duration_sum or 0) / 60, 1)},
+        })
     return {"org_name": org.name, "total": len(campaigns), "campaigns": result}
 
 
@@ -341,14 +333,7 @@ async def org_minutes(org_id: UUID, db: AsyncSession = Depends(get_db), _: User 
     for c in campaigns:
         duration_sum = await db.scalar(select(func.coalesce(func.sum(CallLog.duration), 0)).where(CallLog.campaign_id == c.id))
         call_count   = await db.scalar(select(func.count(CallLog.id)).where(CallLog.campaign_id == c.id))
-        minutes_used = await db.scalar(
-            select(func.coalesce(func.sum(WalletTransaction.minutes), 0))
-            .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
-            .where(Wallet.organization_id == org_id)
-            .where(WalletTransaction.call_log_id.in_(
-                select(CallLog.id).where(CallLog.campaign_id == c.id)
-            ))
-    ) or 0
+        minutes_used = round(int(duration_sum or 0) / 60, 2)
         breakdown.append({
             "campaign_id": str(c.id), "campaign_name": c.name,
             "total_calls": call_count or 0, "duration_sec": int(duration_sum or 0),

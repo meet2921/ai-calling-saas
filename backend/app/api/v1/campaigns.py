@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from uuid import UUID
 from app.services.wallet_service import has_sufficient_balance, get_balance
 from app.db.session import get_db
@@ -16,6 +16,8 @@ from app.core.deps import get_current_user
 from app.services.bolna_service import get_agent_details
 from app.models.user import User
 from app.models.call_logs import CallLog
+from app.models.lead import Lead
+from app.services.wallet_service import has_sufficient_balance, get_balance
 
 async def get_authorized_campaign(
     campaign_id: UUID,
@@ -44,18 +46,40 @@ async def create_campaign(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    campaign = Campaign(
-        name=campaign_data.name,
-        description=campaign_data.description,
-        organization_id=current_user.organization_id,
-        bolna_agent_id=campaign_data.bolna_agent_id
-    )
+    
+    if not campaign_data.bolna_agent_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Bolna agent ID required"
+        )
 
-    db.add(campaign)
-    await db.commit()
-    await db.refresh(campaign)
+    try:
+        agent = await get_agent_details(campaign_data.bolna_agent_id)
 
-    return campaign
+        if not agent:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Bolna agent ID"
+            )
+            
+        campaign = Campaign(
+            name=campaign_data.name,
+            description=campaign_data.description,
+            organization_id=current_user.organization_id,
+            bolna_agent_id=campaign_data.bolna_agent_id
+        )
+
+        db.add(campaign)
+        await db.commit()
+        await db.refresh(campaign)
+
+        return campaign
+    
+    except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Error occurred while fetching Bolna agent details"
+            )
 
 @router.get("/", response_model=list[CampaignResponse])
 async def list_campaigns(
@@ -137,6 +161,13 @@ async def start_campaign_endpoint(
                 "rate_per_minute": balance["rate_per_minute"],
             }
         )
+    # Check if there are any leads for this campaign
+    lead_count = await db.execute(
+        select(func.count()).select_from(Lead).where(Lead.campaign_id == campaign.id)
+    )
+    if lead_count.scalar() == 0:
+        raise HTTPException(status_code=400, detail="No leads found for this campaign")
+
     return await start_campaign(db, campaign.id)
 
 
@@ -186,3 +217,55 @@ async def delete_campaign(
     await db.commit()
 
     return {"message": "Campaign deleted successfully"}
+
+@router.put("/{campaign_id}/update", response_model=CampaignResponse)
+async def update_campaign(
+    campaign_id: UUID,
+    campaign_data: CampaignCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    stmt = select(Campaign).where(
+        Campaign.id == campaign_id,
+        Campaign.organization_id == current_user.organization_id
+    )
+
+    result = await db.execute(stmt)
+    campaign = result.scalar_one_or_none()
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # ✅ 🔥 SAME VALIDATION AS CREATE
+
+    if not campaign_data.bolna_agent_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Bolna agent ID required"
+        )
+
+    try:
+        agent = await get_agent_details(campaign_data.bolna_agent_id)
+
+        if not agent:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid Bolna agent ID"
+            )
+
+
+        campaign.name = campaign_data.name
+        campaign.description = campaign_data.description
+        campaign.bolna_agent_id = campaign_data.bolna_agent_id
+
+        db.add(campaign)
+        await db.commit()
+        await db.refresh(campaign)
+
+        return campaign
+    
+    except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Error occurred while fetching Bolna agent details"
+            )

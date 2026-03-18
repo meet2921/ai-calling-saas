@@ -1,7 +1,5 @@
 import time
-import asyncio
 from uuid import UUID
-
 from app.core.celery_app import celery_app
 from app.db.sync_session import SessionLocal
 from app.models.campaigns import Campaign, CampaignStatus
@@ -56,65 +54,44 @@ def process_campaign(self, campaign_id: str):
                     print("Campaign paused during execution")
                     break
 
-                # -----------------------------
-                # WALLET SAFETY CHECK
-                # -----------------------------
-
                 wallet = db.query(Wallet).filter(
                     Wallet.organization_id == campaign.organization_id
-                ).with_for_update().first()
+                ).first()
 
                 if not wallet or wallet.minutes_balance <= 0:
-
                     print(
                         f"Campaign {campaign_id} stopped — "
                         f"insufficient balance"
                     )
-
                     campaign.status = CampaignStatus.paused
                     campaign.is_processing = False
                     db.commit()
-                    return
+                    return 
 
                 try:
-
-                    # -----------------------------
-                    # RESERVE 1 MINUTE (pre-call)
-                    # -----------------------------
-
-                    wallet.minutes_balance -= 1
-                    db.commit()
-
-                    # Mark lead queued
+                    # Mark as queued
                     lead.status = LeadStatus.QUEUED
                     db.commit()
 
                     formatted_phone = f"+91{lead.phone}"
 
-                    # -----------------------------
-                    # MAKE CALL
-                    # -----------------------------
-
-                    response = asyncio.run(
-                        make_call(
-                            phone=formatted_phone,
-                            agent_id=campaign.bolna_agent_id,
-                            campaign_id=campaign.id,
-                            lead_id=lead.id
-                        )
+                    # Make call
+                    response = make_call(
+                        db=db,
+                        phone=formatted_phone,
+                        agent_id=campaign.bolna_agent_id,
+                        campaign_id=campaign.id,
+                        lead_id=lead.id
                     )
 
                     # SUCCESS
-
                     lead.external_call_id = response.get("call_id")
                     lead.status = LeadStatus.COMPLETED
                     lead.attempts += 1
-                    lead.retry_count = 0
-
+                    lead.retry_count = 0  # reset on success
                     db.commit()
 
                 except Exception as e:
-
                     print(f"Call failed for {lead.phone}: {str(e)}")
 
                     lead.attempts += 1
@@ -127,21 +104,16 @@ def process_campaign(self, campaign_id: str):
 
                     db.commit()
 
-                # -----------------------------
-                # RATE LIMIT
-                # -----------------------------
-
+                # Rate limit
                 time.sleep(campaign.call_delay_seconds)
 
         print("Campaign execution stopped safely")
 
     except Exception as exc:
-
         print("Critical task error:", str(exc))
         self.retry(exc=exc, countdown=5)
 
     finally:
-
         campaign = db.query(Campaign).filter(
             Campaign.id == UUID(campaign_id)
         ).first()

@@ -84,7 +84,7 @@ async def get_current_user(
             detail="User is inactive"
         )
     
-    if not user.organization.is_active:
+    if not user.organization or not user.organization.is_active:
         raise HTTPException(
                 status_code=403,
                 detail="Organization is suspended"

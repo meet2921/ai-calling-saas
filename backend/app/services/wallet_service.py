@@ -88,8 +88,6 @@ async def deduct_minutes_for_call(
     call_log_id: str,
     db: AsyncSession
 ) -> dict:
-    print(f"[DEDUCT] duration_seconds received = {duration_seconds} | billable = {math.ceil(duration_seconds / 60)}")
-
     wallet = await get_or_create_wallet(organization_id, db)
 
     if duration_seconds <= 0:

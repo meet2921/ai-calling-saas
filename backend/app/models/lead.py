@@ -66,3 +66,4 @@ class Lead(Base):
     campaign = relationship("Campaign")
 
     external_call_id = Column(String, nullable=True, index=True)
+    

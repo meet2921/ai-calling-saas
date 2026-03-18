@@ -5,6 +5,7 @@ from datetime import timedelta, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from numpy import exp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -22,7 +23,7 @@ from app.schemas.auth import (
     MsgResponse,
     UserProfile,
 )
-
+from app.schemas.user import UserProfileUpdate
 from app.core.security import (
     hash_password,
     verify_password,
@@ -193,11 +194,17 @@ async def logout(
         try:
             payload = decode_token(raw)
             jti = payload.get("jti")
-            if jti:
-                ttl = int(payload.get("exp", 0) - time.time())
-                await blacklist_token(redis, jti, max(ttl, 1))
-        except Exception:
-            pass
+            exp = payload.get("exp")
+
+            if not jti or not exp:
+                continue
+
+            ttl = int(exp - time.time())
+            await blacklist_token(redis, jti, max(ttl, 1))
+
+        except ValueError:
+            print("[LOGOUT] ⚠️ Invalid token ignored")
+
 
     print(f"[LOGOUT] ✅ {current_user.email}")
     return MsgResponse(message="Logged out successfully.")
@@ -333,3 +340,39 @@ async def change_password(
 
     print(f"[AUTH] ✅ Password changed for {current_user.email}")
     return MsgResponse(message="Password changed successfully.")
+
+@router.put("/me", response_model=UserProfile, summary="Update current user profile")
+async def update_profile(
+    data: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if data.email:
+        current_user.email = data.email
+
+    if data.first_name:
+        current_user.first_name = data.first_name
+
+    if data.last_name:
+        current_user.last_name = data.last_name
+
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    # 🔹 fetch organization
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == current_user.organization_id)
+    )
+    org = org_result.scalar_one_or_none()
+
+    return UserProfile(
+        id=str(current_user.id),
+        email=current_user.email,
+        first_name=current_user.first_name,
+        last_name=current_user.last_name,
+        role=current_user.role.value,
+        organization_id=str(current_user.organization_id),
+        org_name=org.name if org else "",
+        org_slug=org.slug if org else "",
+    )
