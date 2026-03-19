@@ -36,7 +36,7 @@ def process_campaign(self, campaign_id: str):
             leads = db.query(Lead).filter(
                 Lead.campaign_id == campaign.id,
                 Lead.status.in_([LeadStatus.PENDING, LeadStatus.FAILED]),
-                Lead.retry_count < Lead.max_retries
+                Lead.retry_count < Lead.max_retries,
             ).limit(5).all()
 
             if not leads:
@@ -66,29 +66,31 @@ def process_campaign(self, campaign_id: str):
                     campaign.status = CampaignStatus.paused
                     campaign.is_processing = False
                     db.commit()
-                    return 
+                    return
 
                 try:
-                    # Mark as queued
+                    # Mark as queued before attempting the call
                     lead.status = LeadStatus.QUEUED
                     db.commit()
 
                     formatted_phone = f"+91{lead.phone}"
 
-                    # Make call
+                    # make_call() handles its own flush+commit internally
+                    # so the CallLog exists before the webhook fires
                     response = make_call(
                         db=db,
                         phone=formatted_phone,
                         agent_id=campaign.bolna_agent_id,
                         campaign_id=campaign.id,
-                        lead_id=lead.id
+                        lead_id=lead.id,
                     )
 
-                    # SUCCESS
-                    lead.external_call_id = response.get("call_id")
-                    lead.status = LeadStatus.COMPLETED
+                    # Call was accepted by Bolna — mark as CALLING, not COMPLETED.
+                    # The webhook will update status to completed/failed
+                    # when the call actually finishes.
+                    lead.status = LeadStatus.CALLING
                     lead.attempts += 1
-                    lead.retry_count = 0  # reset on success
+                    lead.retry_count = 0
                     db.commit()
 
                 except Exception as e:
@@ -104,7 +106,7 @@ def process_campaign(self, campaign_id: str):
 
                     db.commit()
 
-                # Rate limit
+                # Rate limiting between calls
                 time.sleep(campaign.call_delay_seconds)
 
         print("Campaign execution stopped safely")
@@ -114,12 +116,16 @@ def process_campaign(self, campaign_id: str):
         self.retry(exc=exc, countdown=5)
 
     finally:
-        campaign = db.query(Campaign).filter(
-            Campaign.id == UUID(campaign_id)
-        ).first()
+        # Always release is_processing lock, even on crash
+        try:
+            campaign = db.query(Campaign).filter(
+                Campaign.id == UUID(campaign_id)
+            ).first()
 
-        if campaign:
-            campaign.is_processing = False
-            db.commit()
+            if campaign:
+                campaign.is_processing = False
+                db.commit()
+        except Exception:
+            pass  # don't mask the original exception
 
         db.close()

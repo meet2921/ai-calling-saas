@@ -3,17 +3,15 @@ import os
 import requests
 from app.core.config import settings
 from datetime import datetime
-from sqlalchemy import select
+from sqlalchemy.orm import Session
 from app.models.call_logs import CallLog
 from app.models.lead import Lead
-from sqlalchemy.ext.asyncio import AsyncSession
 from dotenv import load_dotenv
 from httpx import Client
 
-from app.api.v1 import lead
 load_dotenv()
 
-from starlette.exceptions import HTTPException
+from fastapi import HTTPException
 
 BOLNA_API_KEY = os.getenv("BOLNA_API_KEY")
 BOLNA_BASE_URL = os.getenv("BOLNA_API_URL")
@@ -24,14 +22,13 @@ WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
 def _extract_call_id(data):
     if not data:
         return None
-    # dict with top-level id (accept execution/run ids as fallbacks)
+
     if isinstance(data, dict):
         for key in ("id", "call_id", "execution_id", "run_id"):
             val = data.get(key)
             if val:
                 return val
 
-        # nested objects commonly named 'data', 'call', or 'result'
         for parent in ("data", "call", "result"):
             nested = data.get(parent)
             if isinstance(nested, dict):
@@ -40,7 +37,6 @@ def _extract_call_id(data):
                     if val:
                         return val
 
-        # arrays: take first element
         for list_key in ("calls",):
             lst = data.get(list_key)
             if isinstance(lst, list) and lst:
@@ -51,7 +47,6 @@ def _extract_call_id(data):
                         if val:
                             return val
 
-    # response may be a list of objects
     if isinstance(data, list) and data:
         first = data[0]
         if isinstance(first, dict):
@@ -61,17 +56,18 @@ def _extract_call_id(data):
                     return val
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ASYNC — used by FastAPI routes (campaigns router, etc.)
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def get_agent_details(agent_id: str):
-    """Fetch details for a Bolna agent.
-
-    The Bolna API will return 404 if the supplied ID does not exist, which is
-    the most common reason for failures here. We propagate the original status
-    code so callers can distinguish between client and server errors (e.g. a
-    missing agent vs. an invalid API key).
     """
-
+    Fetch details for a Bolna agent.
+    Called from FastAPI routes — uses async httpx.
+    """
     if not BOLNA_API_KEY:
-        # early sanity check; avoids sending an empty `Bearer None` header
         raise HTTPException(status_code=500, detail="Bolna API key is not set")
 
     headers = {"Authorization": f"Bearer {BOLNA_API_KEY}"}
@@ -83,9 +79,6 @@ async def get_agent_details(agent_id: str):
         )
 
     if response.status_code != 200:
-        # propagate the real status code from Bolna so that a 404 comes back
-        # as a 404 to our own client instead of a generic 400, which makes it
-        # easier to debug mismatched IDs.
         raise HTTPException(
             status_code=response.status_code,
             detail=f"Bolna error: {response.text}",
@@ -93,13 +86,26 @@ async def get_agent_details(agent_id: str):
 
     return response.json()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SYNC — used by Celery tasks only
+# Accepts sqlalchemy.orm.Session (sync), NOT AsyncSession
+# ─────────────────────────────────────────────────────────────────────────────
+
 def make_call(
-    db: AsyncSession,
+    db: Session,           # ← correct type: sync SQLAlchemy Session
     phone: str,
     agent_id: str,
     campaign_id: str,
     lead_id: str,
-):
+) -> dict:
+    """
+    Initiates a call via Bolna API and immediately creates a CallLog row.
+    This is a SYNC function — only call it from Celery tasks, never from
+    async FastAPI routes.
+    """
+    if not BOLNA_API_KEY:
+        raise Exception("Bolna API key is not set")
 
     headers = {
         "Authorization": f"Bearer {BOLNA_API_KEY}",
@@ -116,6 +122,7 @@ def make_call(
         },
     }
 
+    # Sync HTTP call — correct inside a Celery worker
     with Client(timeout=20) as client:
         response = client.post(
             f"{BOLNA_MAKE_CALL_URL}/call",
@@ -131,18 +138,18 @@ def make_call(
     except ValueError:
         raise Exception(f"Bolna returned non-JSON response: {response.text}")
 
-    # 🔥 Extract call_id (robustly handle several response shapes)
     call_id = _extract_call_id(data)
 
     if not call_id:
-        raise Exception(f"Bolna did not return call_id. Response body: {response.text}")
+        raise Exception(f"Bolna did not return call_id. Response: {response.text}")
 
-    # 🔥 Update Lead with external_call_id
-    lead =  db.get(Lead, lead_id)
+    # Update Lead with external_call_id
+    # db.get() is correct for sync Session — this was the core bug
+    lead = db.get(Lead, lead_id)
     if lead:
         lead.external_call_id = call_id
 
-    # 🔥 Create CallLog immediately (CRITICAL)
+    # Create CallLog immediately so webhook can find it by call_id
     call_log = CallLog(
         external_call_id=call_id,
         campaign_id=campaign_id,
@@ -154,7 +161,7 @@ def make_call(
     )
 
     db.add(call_log)
-    db.flush()   # ensures INSERT happens immediately
-    db.commit()
+    db.flush()   # INSERT immediately, within same transaction
+    db.commit()  # commit so webhook can read this row from its own session
 
     return data

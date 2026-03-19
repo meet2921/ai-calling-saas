@@ -1,11 +1,13 @@
+import hmac
 import json
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Request, HTTPException, status
+from fastapi import APIRouter, Depends, Request, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
@@ -17,17 +19,69 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+# -------------------------
+# Token Verification
+# -------------------------
+
+def _verify_webhook_token(token: str | None) -> None:
+    """
+    Verifies the secret token passed as ?token= in the webhook URL.
+
+    In Bolna dashboard, register your webhook URL as:
+        https://yourdomain.com/api/v1/bolna/webhook?token=YOUR_SECRET
+
+    Generate a strong secret with:
+        python -c "import secrets; print(secrets.token_hex(32))"
+
+    If BOLNA_WEBHOOK_SECRET is not set in .env, verification is skipped
+    (safe for local development only — always set it in production).
+    """
+    secret = settings.BOLNA_WEBHOOK_SECRET
+
+    # Skip verification if secret is not configured
+    if not secret:
+        logger.warning(
+            "BOLNA_WEBHOOK_SECRET is not set — skipping token verification. "
+            "Set it in production."
+        )
+        return
+
+    if not token:
+        logger.warning("Webhook request missing ?token= query parameter")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing webhook token",
+        )
+
+    # compare_digest prevents timing attacks
+    if not hmac.compare_digest(secret, token.strip()):
+        logger.warning("Webhook token mismatch — unauthorized request blocked")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook token",
+        )
+
+    logger.debug("Webhook token verified successfully")
+
+
+# -------------------------
+# Webhook Endpoint
+# -------------------------
+
 @router.post("/bolna/webhook", status_code=status.HTTP_200_OK)
 async def bolna_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    token: str | None = Query(default=None),  # reads ?token= from URL
+    db: AsyncSession = Depends(get_db),
 ):
-
     raw_body = await request.body()
 
     if not raw_body:
         logger.warning("Bolna webhook received empty body")
         return {"status": "ignored", "reason": "empty body"}
+
+    # Verify token FIRST — before touching any data
+    _verify_webhook_token(token)
 
     try:
         payload = json.loads(raw_body)
@@ -113,8 +167,8 @@ async def bolna_webhook(
                     "Lead resolved via phone",
                     extra={
                         "phone_variant": phone_variant,
-                        "lead_id": lead_obj.id
-                    }
+                        "lead_id": lead_obj.id,
+                    },
                 )
                 break
 
@@ -168,17 +222,15 @@ async def bolna_webhook(
     result = await db.execute(
         select(CallLog).where(CallLog.external_call_id == call_id)
     )
-
     existing_log = result.scalar_one_or_none()
+
+    # Points to whichever log is used for deduction.
+    # Assigned in both update and create paths below.
+    log_for_deduction: CallLog | None = None
 
     try:
 
-        # -------------------------
-        # IMPORTANT FIX
-        # -------------------------
         # If CallLog exists → trust it as source of truth
-        # -------------------------
-
         if existing_log:
             campaign_id = str(existing_log.campaign_id)
             lead_id = str(existing_log.lead_id)
@@ -199,9 +251,10 @@ async def bolna_webhook(
             existing_log.transfer_call = payload.get("transfer_call", False)
 
             extracted = payload.get("extracted_data", {}) or {}
-
             existing_log.customer_sentiment = extracted.get("customer_sentiment")
             existing_log.interest_level = extracted.get("interest_level")
+
+            log_for_deduction = existing_log
 
         # -------------------------
         # Create CallLog if missing
@@ -212,7 +265,7 @@ async def bolna_webhook(
             if not lead_id:
                 logger.warning(
                     "CallLog missing and lead not resolved",
-                    extra={"call_id": call_id}
+                    extra={"call_id": call_id},
                 )
                 return {"status": "ignored"}
 
@@ -242,6 +295,11 @@ async def bolna_webhook(
 
             db.add(new_log)
 
+            # Flush so new_log.id is populated before deduction query
+            await db.flush()
+
+            log_for_deduction = new_log
+
         # -------------------------
         # Update Lead Status
         # -------------------------
@@ -263,20 +321,22 @@ async def bolna_webhook(
                 }
 
                 lead_status = status_map.get(status_value, "calling")
-
                 lead.status = LeadStatus(lead_status)
                 lead.external_call_id = call_id
 
         # -------------------------
         # Wallet Deduction
+        # Fires for BOTH existing and newly created CallLogs.
+        # Only deducts once per call — guarded by WalletTransaction check.
+        # Only deducts when call has duration (i.e. call actually connected).
         # -------------------------
 
-        if existing_log and duration > 0 and campaign_id:
+        if duration > 0 and campaign_id and log_for_deduction:
 
             already_deducted = await db.scalar(
                 select(func.count())
                 .select_from(WalletTransaction)
-                .where(WalletTransaction.call_log_id == existing_log.id)
+                .where(WalletTransaction.call_log_id == log_for_deduction.id)
             )
 
             if already_deducted == 0:
@@ -284,7 +344,6 @@ async def bolna_webhook(
                 campaign_result = await db.execute(
                     select(Campaign).where(Campaign.id == campaign_id)
                 )
-
                 campaign_obj = campaign_result.scalar_one_or_none()
 
                 if campaign_obj:
@@ -292,8 +351,8 @@ async def bolna_webhook(
                     deduction = await deduct_minutes_for_call(
                         organization_id=str(campaign_obj.organization_id),
                         duration_seconds=duration,
-                        call_log_id=str(existing_log.id),
-                        db=db
+                        call_log_id=str(log_for_deduction.id),
+                        db=db,
                     )
 
                     logger.info(
@@ -307,9 +366,7 @@ async def bolna_webhook(
     except Exception:
 
         await db.rollback()
-
         logger.exception("Webhook processing failed")
-
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
     return {"status": "success"}

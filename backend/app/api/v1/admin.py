@@ -36,7 +36,7 @@ from app.models.call_logs import CallLog
 from app.models.lead import Lead
 from app.models.wallet import Wallet, WalletTransaction
 
-router = APIRouter(prefix="/api/v1/admin", tags=["Super Admin"])
+router = APIRouter(tags=["Super Admin"])
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
