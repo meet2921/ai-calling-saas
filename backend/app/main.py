@@ -1,11 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.encoders import ENCODERS_BY_TYPE
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
+from datetime import datetime
 import logging
 import os
+
+# Serialize naive datetimes as UTC (append 'Z') so the frontend
+# correctly interprets all timestamps as UTC instead of local time.
+def _utc_datetime_encoder(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        return dt.isoformat() + "Z"
+    return dt.isoformat()
+
+ENCODERS_BY_TYPE[datetime] = _utc_datetime_encoder
 
 from app.api.v1.auth import router as auth_router
 from app.api.v1.campaigns import router as campaign_router

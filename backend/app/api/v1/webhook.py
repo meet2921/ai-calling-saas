@@ -204,6 +204,32 @@ async def bolna_webhook(
         cost = 0.0
 
     # -------------------------
+    # Bolna Call Timestamp
+    # -------------------------
+
+    # Try several field names Bolna may use for the call start time
+    _raw_ts = (
+        payload.get("created_at")
+        or payload.get("initiated_at")
+        or payload.get("start_time")
+        or (payload.get("telephony_data") or {}).get("start_time")
+        or root_payload.get("created_at")
+    )
+    executed_at: datetime
+    if _raw_ts:
+        try:
+            _dt = datetime.fromisoformat(str(_raw_ts).replace("Z", "+00:00"))
+            # Normalise to UTC-naive for storage in the naive DateTime column
+            if _dt.tzinfo is not None:
+                from datetime import timezone as _tz
+                _dt = _dt.astimezone(_tz.utc).replace(tzinfo=None)
+            executed_at = _dt
+        except Exception:
+            executed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    else:
+        executed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # -------------------------
     # Appointment
     # -------------------------
 
@@ -244,6 +270,7 @@ async def bolna_webhook(
             existing_log.duration = duration
             existing_log.cost = cost
             existing_log.status = status_value
+            existing_log.executed_at = executed_at
             existing_log.recording_url = payload.get("telephony_data", {}).get("recording_url")
             existing_log.transcript = payload.get("transcript")
             existing_log.summary = payload.get("summary")
@@ -290,8 +317,8 @@ async def bolna_webhook(
                 final_call_summary=payload.get("summary"),
                 summary=payload.get("summary"),
                 transfer_call=payload.get("transfer_call", False),
-                executed_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                executed_at=executed_at,
+                created_at=executed_at,
             )
 
             db.add(new_log)

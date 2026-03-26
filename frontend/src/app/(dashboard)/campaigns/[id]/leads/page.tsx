@@ -165,7 +165,7 @@ export default function LeadsUploadPage() {
 
   const totalPages = Math.max(1, Math.ceil(leadsTotal / pageSize))
   const fmtDate = (d: string) =>
-    new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Calcutta' })
   const fmtDuration = (sec: number) => {
     const m = Math.floor(sec / 60).toString().padStart(2, '0')
     const s = (sec % 60).toString().padStart(2, '0')

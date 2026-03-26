@@ -88,7 +88,7 @@ export default function CampaignsPage() {
   const paginated = filtered.slice((page - 1) * pageSize, page * pageSize)
 
   const fmtDate = (d: string) =>
-    new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Calcutta' })
 
   const ActionBtn = ({
     label, icon, action, id, color = '#2563eb',

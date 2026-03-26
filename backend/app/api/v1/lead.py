@@ -175,9 +175,9 @@ async def list_leads(
                 "name": (lead.custom_fields or {}).get("name"),
                 "status": lead.status,
                 "custom_fields": lead.custom_fields,
-                "last_called": lead.last_called.isoformat() if lead.last_called else None,
+                "last_called": lead.last_called.isoformat() + "Z" if lead.last_called else None,
                 "duration": lead.duration,
-                "created_at": lead.created_at.isoformat(),
+                "created_at": lead.created_at.isoformat() + "Z",
             }
             for lead in leads
         ],

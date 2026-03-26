@@ -178,7 +178,7 @@ export default function CampaignDetailPage() {
   }
 
   const fmtDate = (d: string) =>
-    new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    new Date(d).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Calcutta' })
 
   const fmtDuration = (sec: number) => {
     const m = Math.floor(sec / 60).toString().padStart(2, '0')
@@ -272,7 +272,7 @@ export default function CampaignDetailPage() {
           <div>
             <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '3px' }}>Created date</p>
             <p style={{ fontSize: '14px', fontWeight: '600', color: '#111827' }}>
-              {new Date(campaign.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+              {new Date(campaign.created_at).toLocaleDateString('en-IN', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'Asia/Calcutta' })}
             </p>
           </div>
           <div>

@@ -60,7 +60,7 @@ const fmtDuration = (sec: number) => {
 
 const fmtDate = (d: string) =>
   new Date(d).toLocaleString('en-IN', {
-    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Calcutta',
   })
 
 export default function CallLogsPage() {

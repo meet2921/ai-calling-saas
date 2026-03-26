@@ -26,7 +26,7 @@ interface Transaction {
 const fmt = (n: number) => n?.toLocaleString('en-IN') ?? '0'
 const fmtCurrency = (n: number) => `₹${fmt(n)}`
 const fmtDate = (d: string) =>
-  new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Calcutta' })
 
 export default function WalletPage() {
   const [summary, setSummary] = useState<WalletSummary | null>(null)
