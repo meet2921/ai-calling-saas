@@ -1,14 +1,12 @@
 import uuid
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Integer
+from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Integer, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from app.services.wallet_service import has_sufficient_balance, get_balance
 
 from app.models.base import Base
-from sqlalchemy import Boolean
 
 # ✅ Campaign Status Enum
 class CampaignStatus(str, enum.Enum):
@@ -45,9 +43,10 @@ class Campaign(Base):
 
     is_processing = Column(Boolean, default=False, nullable=False)
     call_delay_seconds = Column(Integer, default=1)
+    scheduled_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     # Relationship
     organization = relationship("Organization")

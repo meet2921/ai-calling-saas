@@ -43,7 +43,7 @@ async def credit_wallet(
     wallet = await get_or_create_wallet(organization_id, db)
     wallet.rate_per_minute = rate_per_minute
 
-    minutes_to_add = math.floor(amount_inr / rate_per_minute)
+    minutes_to_add = math.floor(amount_inr / rate_per_minute) if rate_per_minute > 0 else 0
 
     if minutes_to_add <= 0:
         raise ValueError(
@@ -88,7 +88,15 @@ async def deduct_minutes_for_call(
     call_log_id: str,
     db: AsyncSession
 ) -> dict:
-    wallet = await get_or_create_wallet(organization_id, db)
+    # SELECT FOR UPDATE prevents concurrent deductions from the same wallet
+    result = await db.execute(
+        select(Wallet)
+        .where(Wallet.organization_id == organization_id)
+        .with_for_update()
+    )
+    wallet = result.scalar_one_or_none()
+    if not wallet:
+        wallet = await get_or_create_wallet(organization_id, db)
 
     if duration_seconds <= 0:
         return {
@@ -150,5 +158,12 @@ async def has_sufficient_balance(
     organization_id: str,
     db: AsyncSession
 ) -> bool:
-    wallet = await get_or_create_wallet(organization_id, db)
+    result = await db.execute(
+        select(Wallet)
+        .where(Wallet.organization_id == organization_id)
+        .with_for_update()
+    )
+    wallet = result.scalar_one_or_none()
+    if not wallet:
+        return False
     return wallet.minutes_balance > 0

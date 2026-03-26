@@ -12,7 +12,7 @@ from sqlalchemy import (
     Text
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB as JSON
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
 
 from app.models.base import Base
@@ -89,9 +89,6 @@ class Call(Base):
     )
 
     # Relationships
-    # use backref so reverse properties are created automatically regardless of import order
-    from sqlalchemy.orm import backref
-
     campaign = relationship(
         "Campaign",
         backref=backref("calls", cascade="all, delete-orphan")

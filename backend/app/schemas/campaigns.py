@@ -19,6 +19,7 @@ class CampaignCreate(BaseModel):
     name: str
     description: str | None = None
     bolna_agent_id: str | None = None
+    scheduled_at: datetime | None = None
 
 
 # ✅ 3️⃣ Status Update Schema (NEW for Step 2)
@@ -32,10 +33,8 @@ class CampaignResponse(BaseModel):
     name: str
     description: str | None
     bolna_agent_id: str | None
-
-    # 🔥 replaced is_active
     status: CampaignStatus
-
+    scheduled_at: datetime | None
     created_at: datetime
     updated_at: datetime | None
 

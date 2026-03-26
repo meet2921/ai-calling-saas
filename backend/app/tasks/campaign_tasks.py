@@ -1,3 +1,4 @@
+import logging
 import time
 from uuid import UUID
 from app.core.celery_app import celery_app
@@ -6,6 +7,8 @@ from app.models.campaigns import Campaign, CampaignStatus
 from app.models.lead import Lead, LeadStatus
 from app.models.wallet import Wallet
 from app.services.bolna_service import make_call
+
+logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -19,10 +22,10 @@ def process_campaign(self, campaign_id: str):
         ).first()
 
         if not campaign:
-            print("Campaign not found")
+            logger.warning("Campaign %s not found", campaign_id)
             return
 
-        print(f"Processing campaign {campaign.id}")
+        logger.info("Processing campaign %s", campaign.id)
 
         while True:
 
@@ -30,7 +33,7 @@ def process_campaign(self, campaign_id: str):
 
             # STOP / PAUSE CHECK
             if campaign.status != CampaignStatus.running:
-                print("Campaign paused or stopped")
+                logger.info("Campaign %s is %s — stopping", campaign_id, campaign.status.value)
                 break
 
             leads = db.query(Lead).filter(
@@ -40,10 +43,24 @@ def process_campaign(self, campaign_id: str):
             ).limit(5).all()
 
             if not leads:
+                # Check if any calls are still in-flight (CALLING or QUEUED)
+                active_count = db.query(Lead).filter(
+                    Lead.campaign_id == campaign.id,
+                    Lead.status.in_([LeadStatus.CALLING, LeadStatus.QUEUED]),
+                ).count()
+
+                if active_count > 0:
+                    logger.info(
+                        "Campaign %s waiting for %d active call(s) to complete",
+                        campaign_id, active_count,
+                    )
+                    time.sleep(15)
+                    continue
+
                 campaign.status = CampaignStatus.completed
                 campaign.is_processing = False
                 db.commit()
-                print("Campaign completed")
+                logger.info("Campaign %s completed", campaign_id)
                 break
 
             for lead in leads:
@@ -51,7 +68,7 @@ def process_campaign(self, campaign_id: str):
                 db.refresh(campaign)
 
                 if campaign.status != CampaignStatus.running:
-                    print("Campaign paused during execution")
+                    logger.info("Campaign %s paused during execution", campaign_id)
                     break
 
                 wallet = db.query(Wallet).filter(
@@ -59,10 +76,7 @@ def process_campaign(self, campaign_id: str):
                 ).first()
 
                 if not wallet or wallet.minutes_balance <= 0:
-                    print(
-                        f"Campaign {campaign_id} stopped — "
-                        f"insufficient balance"
-                    )
+                    logger.warning("Campaign %s paused — insufficient balance", campaign_id)
                     campaign.status = CampaignStatus.paused
                     campaign.is_processing = False
                     db.commit()
@@ -94,7 +108,7 @@ def process_campaign(self, campaign_id: str):
                     db.commit()
 
                 except Exception as e:
-                    print(f"Call failed for {lead.phone}: {str(e)}")
+                    logger.error("Call failed for %s: %s", lead.phone, e)
 
                     lead.attempts += 1
                     lead.retry_count += 1
@@ -109,10 +123,10 @@ def process_campaign(self, campaign_id: str):
                 # Rate limiting between calls
                 time.sleep(campaign.call_delay_seconds)
 
-        print("Campaign execution stopped safely")
+        logger.info("Campaign %s execution stopped safely", campaign_id)
 
     except Exception as exc:
-        print("Critical task error:", str(exc))
+        logger.exception("Critical task error in campaign %s", campaign_id)
         self.retry(exc=exc, countdown=5)
 
     finally:

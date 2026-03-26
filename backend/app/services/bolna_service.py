@@ -2,7 +2,7 @@ import httpx
 import os
 import requests
 from app.core.config import settings
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.models.call_logs import CallLog
 from app.models.lead import Lead
@@ -156,8 +156,8 @@ def make_call(
         lead_id=lead_id,
         user_number=phone,
         status="initiated",
-        created_at=datetime.utcnow(),
-        executed_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
+        executed_at=datetime.now(timezone.utc),
     )
 
     db.add(call_log)

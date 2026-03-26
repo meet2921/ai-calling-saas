@@ -16,11 +16,12 @@ Endpoints:
   GET    /api/v1/admin/users                            → All users platform-wide
   PATCH  /api/v1/admin/users/{id}/toggle-status         → Activate/deactivate user
 """
+import logging
 import re
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -28,6 +29,7 @@ from uuid import UUID
 
 from app.db.session import get_db
 from app.core.deps import require_super_admin
+from app.core.limiter import limiter
 from app.core.security import hash_password
 from app.models.organization import Organization
 from app.models.user import User, UserRole
@@ -37,6 +39,7 @@ from app.models.lead import Lead
 from app.models.wallet import Wallet, WalletTransaction
 
 router = APIRouter(tags=["Super Admin"])
+logger = logging.getLogger(__name__)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -71,7 +74,7 @@ class UpdateOrgRequest(BaseModel):
 
 
 class CreditWalletRequest(BaseModel):
-    amount_inr:      float = Field(..., gt=0)
+    minutes:         int   = Field(..., gt=0)
     rate_per_minute: float = Field(..., gt=0)
     description:     str   = Field(default="Manual top-up by Super Admin")
 
@@ -79,7 +82,8 @@ class CreditWalletRequest(BaseModel):
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @router.get("/dashboard")
-async def dashboard(db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def dashboard(request: Request, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     total_orgs         = await db.scalar(select(func.count()).select_from(Organization))
     active_orgs        = await db.scalar(select(func.count()).select_from(Organization).where(Organization.is_active == True))
     total_admins       = await db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.ADMIN))
@@ -102,7 +106,9 @@ async def dashboard(db: AsyncSession = Depends(get_db), _: User = Depends(requir
 # ── Register Org + Admin ──────────────────────────────────────────────────────
 
 @router.post("/register", status_code=201)
+@limiter.limit("30/minute")
 async def register_org_and_admin(
+    request: Request,
     data: RegisterAdminRequest,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_super_admin),
@@ -123,14 +129,14 @@ async def register_org_and_admin(
         # Case 2 — Org already exists, reuse it
         org = existing_org
         org_is_new = False
-        print(f"[REGISTER] 🔗 Joined existing org: '{org.name}' ({org.slug})")
+        logger.info("Register: joined existing org '%s' (%s)", org.name, org.slug)
     else:
         # Case 1 — Create new org
         org = Organization(id=uuid.uuid4(), name=data.org_name.strip(), slug=data.org_slug, is_active=True)
         db.add(org)
         await db.flush()
         org_is_new = True
-        print(f"[REGISTER] 🆕 New org created: '{org.name}' ({org.slug})")
+        logger.info("Register: new org created '%s' (%s)", org.name, org.slug)
 
     # ── Step 3: Create admin user ──────────────────────────────────────────
     admin = User(
@@ -146,7 +152,7 @@ async def register_org_and_admin(
     db.add(admin)
     await db.flush()
 
-    print(f"[REGISTER]    Admin user: {admin.email} | org_id: {org.id}")
+    logger.info("Register: admin user %s created | org_id: %s", admin.email, org.id)
 
     # ── Step 4: Wallet — only for new orgs ────────────────────────────────
     if org_is_new:
@@ -199,8 +205,22 @@ async def register_org_and_admin(
 # ── Organizations ─────────────────────────────────────────────────────────────
 
 @router.get("/organizations")
-async def list_organizations(db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
-    orgs = (await db.execute(select(Organization).order_by(Organization.created_at.desc()))).scalars().all()
+@limiter.limit("120/minute")
+async def list_organizations(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_super_admin),
+):
+    offset = (page - 1) * page_size
+    total = await db.scalar(select(func.count()).select_from(Organization))
+    orgs = (await db.execute(
+        select(Organization)
+        .order_by(Organization.created_at.desc())
+        .limit(page_size)
+        .offset(offset)
+    )).scalars().all()
 
     result = []
     for org in orgs:
@@ -220,11 +240,18 @@ async def list_organizations(db: AsyncSession = Depends(get_db), _: User = Depen
                 "rate_per_minute":         wallet.rate_per_minute         if wallet else 0.0,
             },
         })
-    return result
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),  # ceiling division
+        "organizations": result,
+    }
 
 
 @router.get("/organizations/{org_id}")
-async def get_organization(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def get_organization(request: Request, org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -237,14 +264,29 @@ async def get_organization(org_id: UUID, db: AsyncSession = Depends(get_db), _: 
     total_calls    = await db.scalar(select(func.count(CallLog.id)).where(CallLog.campaign_id.in_(campaign_ids))) if campaign_ids else 0
     total_duration = await db.scalar(select(func.coalesce(func.sum(CallLog.duration), 0)).where(CallLog.campaign_id.in_(campaign_ids))) if campaign_ids else 0
 
+    # per-campaign stats
+    campaigns_with_stats = []
+    for c in campaigns:
+        lead_count = await db.scalar(select(func.count(Lead.id)).where(Lead.campaign_id == c.id)) or 0
+        call_count = await db.scalar(select(func.count(CallLog.id)).where(CallLog.campaign_id == c.id)) or 0
+        duration_sum = await db.scalar(select(func.coalesce(func.sum(CallLog.duration), 0)).where(CallLog.campaign_id == c.id)) or 0
+        campaigns_with_stats.append({
+            "id": str(c.id), "name": c.name,
+            "status": c.status.value if hasattr(c.status, "value") else c.status,
+            "stats": {
+                "total_leads": lead_count,
+                "total_calls": call_count,
+                "total_minutes": round(int(duration_sum) / 60, 1),
+            },
+        })
+
     return {
         "id": str(org.id), "name": org.name, "slug": org.slug,
         "is_active": org.is_active, "created_at": org.created_at,
         "users": [{"id": str(u.id), "email": u.email, "first_name": u.first_name,
                    "last_name": u.last_name, "role": u.role.value, "is_active": u.is_active,
                    "last_login_at": u.last_login_at} for u in users],
-        "campaigns": [{"id": str(c.id), "name": c.name,
-                       "status": c.status.value if hasattr(c.status, "value") else c.status} for c in campaigns],
+        "campaigns": campaigns_with_stats,
         "stats": {"total_users": len(users), "total_campaigns": len(campaigns),
                   "total_calls": total_calls or 0, "total_minutes": round(int(total_duration or 0) / 60, 1)},
         "wallet": {"minutes_balance": wallet.minutes_balance if wallet else 0,
@@ -255,7 +297,8 @@ async def get_organization(org_id: UUID, db: AsyncSession = Depends(get_db), _: 
 
 
 @router.patch("/organizations/{org_id}")
-async def update_organization(org_id: UUID, data: UpdateOrgRequest, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("30/minute")
+async def update_organization(request: Request, org_id: UUID, data: UpdateOrgRequest, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -269,7 +312,8 @@ async def update_organization(org_id: UUID, data: UpdateOrgRequest, db: AsyncSes
 
 
 @router.delete("/organizations/{org_id}")
-async def delete_organization(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("10/minute")
+async def delete_organization(request: Request, org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -281,7 +325,8 @@ async def delete_organization(org_id: UUID, db: AsyncSession = Depends(get_db), 
 # ── Per-org: Users ────────────────────────────────────────────────────────────
 
 @router.get("/organizations/{org_id}/users")
-async def org_users(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def org_users(request: Request, org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -297,7 +342,8 @@ async def org_users(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = 
 # ── Per-org: Campaigns ────────────────────────────────────────────────────────
 
 @router.get("/organizations/{org_id}/campaigns")
-async def org_campaigns(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def org_campaigns(request: Request, org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -321,7 +367,8 @@ async def org_campaigns(org_id: UUID, db: AsyncSession = Depends(get_db), _: Use
 # ── Per-org: Minutes breakdown ────────────────────────────────────────────────
 
 @router.get("/organizations/{org_id}/minutes")
-async def org_minutes(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def org_minutes(request: Request, org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -359,7 +406,8 @@ async def org_minutes(org_id: UUID, db: AsyncSession = Depends(get_db), _: User 
 # ── Per-org: Wallet ───────────────────────────────────────────────────────────
 
 @router.get("/organizations/{org_id}/wallet")
-async def org_wallet(org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def org_wallet(request: Request, org_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -393,21 +441,54 @@ async def org_wallet(org_id: UUID, db: AsyncSession = Depends(get_db), _: User =
 
 
 @router.post("/organizations/{org_id}/wallet/credit")
-async def credit_wallet(org_id: UUID, data: CreditWalletRequest, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("30/minute")
+async def credit_wallet(request: Request, org_id: UUID, data: CreditWalletRequest, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     org = await db.get(Organization, org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     from app.services.wallet_service import credit_wallet as _credit
-    result = await _credit(str(org_id), data.amount_inr, data.rate_per_minute, data.description, db)
+    amount_inr = data.minutes * data.rate_per_minute
+    result = await _credit(str(org_id), amount_inr, data.rate_per_minute, data.description, db)
     await db.commit()
     return {"message": "Wallet credited successfully.", **result}
+
+
+# ── All campaigns (cross-org) ────────────────────────────────────────────────
+
+@router.get("/campaigns")
+@limiter.limit("120/minute")
+async def list_all_campaigns(request: Request, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+    rows = (await db.execute(
+        select(Campaign, Organization.name, Organization.id)
+        .join(Organization, Campaign.organization_id == Organization.id)
+        .order_by(Organization.name, Campaign.created_at.desc())
+    )).all()
+
+    result = []
+    for c, org_name, org_id in rows:
+        lead_count = await db.scalar(select(func.count()).select_from(Lead).where(Lead.campaign_id == c.id)) or 0
+        call_count = await db.scalar(select(func.count()).select_from(CallLog).where(CallLog.campaign_id == c.id)) or 0
+        result.append({
+            "id": str(c.id),
+            "name": c.name,
+            "status": c.status.value if hasattr(c.status, "value") else c.status,
+            "bolna_agent_id": c.bolna_agent_id,
+            "created_at": c.created_at,
+            "organization_id": str(org_id),
+            "organization_name": org_name,
+            "total_leads": lead_count,
+            "total_calls": call_count,
+        })
+
+    return {"total": len(result), "campaigns": result}
 
 
 # ── All users (cross-org) ─────────────────────────────────────────────────────
 
 @router.get("/users")
-async def list_all_users(db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("120/minute")
+async def list_all_users(request: Request, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     rows = (await db.execute(
         select(User, Organization.name, Organization.slug)
         .join(Organization, User.organization_id == Organization.id)
@@ -425,7 +506,8 @@ async def list_all_users(db: AsyncSession = Depends(get_db), _: User = Depends(r
 
 
 @router.patch("/users/{user_id}/toggle-status")
-async def toggle_user_status(user_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
+@limiter.limit("30/minute")
+async def toggle_user_status(request: Request, user_id: UUID, db: AsyncSession = Depends(get_db), _: User = Depends(require_super_admin)):
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

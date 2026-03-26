@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from app.models.base import Base
@@ -26,7 +26,7 @@ class CallLog(Base):
     transcript = Column(Text, nullable=True)
 
     scheduled_at = Column(DateTime, nullable=True)
-    executed_at = Column(DateTime, default=datetime.utcnow)
+    executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     username = Column(String, nullable=True)
 
@@ -42,7 +42,7 @@ class CallLog(Base):
 
     transfer_call = Column(Boolean, default=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     campaign = relationship("Campaign", backref="call_logs")
     lead = relationship("Lead", backref="call_logs")

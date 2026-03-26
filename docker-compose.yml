@@ -1,6 +1,7 @@
-version: "3.10"
-
 services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
   postgres:
     image: postgres:15
     container_name: saas_postgres
@@ -13,53 +14,94 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saas_user -d saas_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     container_name: saas_redis
     restart: always
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  # backend:
-  #   build: .
-  #   container_name: saas_backend
-  #   command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-  #   volumes:
-  #     - .:/app
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #   environment:
-  #     - DATABASE_URL=postgresql+asyncpg://saas_user:123456@postgres:5432/saas_db
-  #     - CELERY_BROKER_URL=redis://redis:6379/0
-  #     - CELERY_BACKEND_URL=redis://redis:6379/0
-  #   ports:
-  #     - "8000:8000"
+  # ── Backend ─────────────────────────────────────────────────────────────────
 
-  # worker:
-  #   build: .
-  #   container_name: saas_worker
-  #   command: celery -A app.core.celery_app.celery_app worker --loglevel=info -Q campaign_queue
-  #   volumes:
-  #     - .:/app
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #   environment:
-  #     - DATABASE_URL=postgresql://saas_user:123456@postgres:5432/saas_db
-  #     - CELERY_BROKER_URL=redis://redis:6379/0
-  #     - CELERY_BACKEND_URL=redis://redis:6379/0
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas_backend
+    restart: always
+    command: >
+      sh -c "alembic upgrade head &&
+             python create_super_admin.py &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./backend:/app          # live-reload in dev; remove for prod
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://saas_user:123456@postgres:5432/saas_db
+      SYNC_DATABASE_URL: postgresql://saas_user:123456@postgres:5432/saas_db
+      REDIS_URL: redis://redis:6379/0
+      CAMPAIGN_BROKER_URL: redis://redis:6379/0
+      CAMPAIGN_RESULT_BACKEND: redis://redis:6379/0
+
+  # ── Celery Worker ───────────────────────────────────────────────────────────
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: saas_worker
+    restart: always
+    command: celery -A app.core.celery_app.celery_app worker --beat --loglevel=info -Q campaign_queue --uid nobody
+    volumes:
+      - ./backend:/app          # shares code with backend service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://saas_user:123456@postgres:5432/saas_db
+      SYNC_DATABASE_URL: postgresql://saas_user:123456@postgres:5432/saas_db
+      REDIS_URL: redis://redis:6379/0
+      CAMPAIGN_BROKER_URL: redis://redis:6379/0
+      CAMPAIGN_RESULT_BACKEND: redis://redis:6379/0
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_APP_NAME: "AI Calling SaaS"
+    container_name: saas_frontend
+    restart: always
+    ports:
+      - "3001:3000"
+    depends_on:
+      - backend
 
 volumes:
   pgdata:
-
-
-# Fresh restart 
-# docker-compose down -v
-# backend/migrations/versions/
-# Delete every file inside that folder.
-# docker-compose up -d
-# alembic revision --autogenerate -m "initial schema"
-# alembic upgrade head
-# alembic upgrade head

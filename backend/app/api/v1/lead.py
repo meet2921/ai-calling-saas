@@ -1,13 +1,13 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select,delete, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select, delete, func
 from uuid import UUID
 import csv
 import io
-import re
-from pydantic import BaseModel as _BM
-from sqlalchemy import func
+import logging
+from sqlalchemy.exc import IntegrityError
+
+logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
 from app.models.lead import Lead, LeadStatus
@@ -20,13 +20,6 @@ router = APIRouter()
 # ──────────────────────────────────────────────
 # HELPERS
 # ──────────────────────────────────────────────
-
-E164_RE = re.compile(r"^\+?[1-9]\d{6,14}$")
-
-def _is_valid_phone(phone: str) -> bool:
-    """Basic E.164-style validation. Swap in phonenumbers lib for production."""
-    return bool(E164_RE.match(phone.replace(" ", "").replace("-", "")))
-
 
 async def _get_campaign_or_404(
     campaign_id: UUID,
@@ -113,16 +106,20 @@ async def upload_leads_csv(
 
     try:
         await db.commit()
-    except Exception:
+    except IntegrityError:
         await db.rollback()
         raise HTTPException(
             status_code=400,
-            detail="Duplicate phone found in database"
+            detail="Duplicate phone number found in this campaign"
         )
+    except Exception:
+        await db.rollback()
+        logger.exception("Lead upload failed")
+        raise HTTPException(status_code=500, detail="Upload failed — check server logs")
 
     # If the campaign was previously completed, reset it to draft so it can be restarted
     # when new leads are added.
-    if campaign.status == CampaignStatus.completed:
+    if campaign.status in (CampaignStatus.completed, CampaignStatus.stopped):
         campaign.status = CampaignStatus.draft
         await db.commit()
 
@@ -150,14 +147,16 @@ async def list_leads(
     """
     await _get_campaign_or_404(campaign_id, current_user.organization_id, db)
 
-    stmt = select(Lead).where(
+    base_where = [
         Lead.campaign_id == campaign_id,
         Lead.organization_id == current_user.organization_id,
-    )
-
+    ]
     if status:
-        stmt = stmt.where(Lead.status == status)
+        base_where.append(Lead.status == status)
 
+    total = await db.scalar(select(func.count()).select_from(Lead).where(*base_where))
+
+    stmt = select(Lead).where(*base_where)
     stmt = stmt.order_by(Lead.created_at.desc())
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
 
@@ -167,13 +166,17 @@ async def list_leads(
     return {
         "page": page,
         "page_size": page_size,
-        "total": len(leads),        # swap for COUNT(*) subquery if dataset is huge
+        "total": total,
+        "total_pages": max(1, -(-total // page_size)),
         "leads": [
             {
                 "id": str(lead.id),
                 "phone": lead.phone,
+                "name": (lead.custom_fields or {}).get("name"),
                 "status": lead.status,
                 "custom_fields": lead.custom_fields,
+                "last_called": lead.last_called.isoformat() if lead.last_called else None,
+                "duration": lead.duration,
                 "created_at": lead.created_at.isoformat(),
             }
             for lead in leads
@@ -195,23 +198,21 @@ async def delete_lead(
     if you need an audit trail."""
     await _get_campaign_or_404(campaign_id, current_user.organization_id, db)
 
-    stmt = (
-        delete(Lead)
-        .where(
-            Lead.id == lead_id,
-            Lead.campaign_id == campaign_id,
-            Lead.organization_id == current_user.organization_id,
-        )
-        .returning(Lead.id)
+    # Verify lead exists and belongs to this campaign/org
+    lead_stmt = select(Lead).where(
+        Lead.id == lead_id,
+        Lead.campaign_id == campaign_id,
+        Lead.organization_id == current_user.organization_id,
     )
+    result = await db.execute(lead_stmt)
+    lead = result.scalar_one_or_none()
 
-    result = await db.execute(stmt)
-    deleted = result.fetchone()
-
-    if not deleted:
-        await db.rollback()
+    if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
+    # Delete call logs first to avoid FK violation
+    await db.execute(delete(CallLog).where(CallLog.lead_id == lead_id))
+    await db.delete(lead)
     await db.commit()
     return {"message": "Lead removed", "lead_id": str(lead_id)}
 

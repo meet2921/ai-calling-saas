@@ -1,9 +1,10 @@
-# app/api/v1/auth.py   
+# app/api/v1/auth.py
+import logging
 import time
 import secrets
 from datetime import timedelta, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from numpy import exp
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,10 +37,41 @@ from app.core.security import (
 from app.core.deps import get_current_user
 from app.core.email import send_password_reset_email
 from app.core.config import settings
+from app.core.limiter import limiter
 
 router = APIRouter(tags=["Auth"])
 _bearer = HTTPBearer(auto_error=False)
 _RESET_PREFIX = "pw:reset:"
+logger = logging.getLogger(__name__)
+
+
+def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    """Attach HttpOnly, Secure, SameSite=Strict cookies to the response."""
+    secure = settings.APP_ENV == "production"
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        secure=secure,
+        samesite="strict",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=secure,
+        samesite="strict",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/",
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    """Expire both auth cookies immediately."""
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +79,8 @@ _RESET_PREFIX = "pw:reset:"
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=TokenResponse, summary="Login")
-async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(request: Request, response: Response, data: LoginRequest, db: AsyncSession = Depends(get_db)):
     """
     Login with org_slug + email + password.
     Body: { "org_slug": "abc-xyz", "email": "admin@abc.com", "password": "Secure@123" }
@@ -75,6 +108,7 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     # Same vague error for wrong email AND wrong password → no enumeration
     if not user or not verify_password(data.password, user.password_hash):
+        logger.warning("Failed login attempt | org: %s | email: %s", data.org_slug, data.email)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     if not user.is_active:
@@ -87,10 +121,14 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
 
-    print(f"[LOGIN] ✅ {user.email} | org: {org.slug} | role: {user.role}")
+    access_token  = create_access_token(str(user.id), str(org.id))
+    refresh_token = create_refresh_token(str(user.id), str(org.id))
+    _set_auth_cookies(response, access_token, refresh_token)
+
+    logger.info("Login success: %s | org: %s | role: %s", user.email, org.slug, user.role)
     return {
-        "access_token":  create_access_token(str(user.id), str(org.id)),
-        "refresh_token": create_refresh_token(str(user.id), str(org.id)),
+        "access_token":  access_token,
+        "refresh_token": refresh_token,
         "token_type":    "bearer",
     }
 
@@ -100,7 +138,10 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/refresh", response_model=TokenResponse, summary="Refresh token pair")
+@limiter.limit("60/minute")
 async def refresh(
+    request: Request,
+    response: Response,
     data: RefreshRequest,
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis_client),
@@ -129,9 +170,13 @@ async def refresh(
         ttl = int(payload.get("exp", 0) - time.time())
         await blacklist_token(redis, jti, max(ttl, 1))
 
+    access_token  = create_access_token(user_id, org_id)
+    refresh_token = create_refresh_token(user_id, org_id)
+    _set_auth_cookies(response, access_token, refresh_token)
+
     return {
-        "access_token":  create_access_token(user_id, org_id),
-        "refresh_token": create_refresh_token(user_id, org_id),
+        "access_token":  access_token,
+        "refresh_token": refresh_token,
         "token_type":    "bearer",
     }
 
@@ -179,6 +224,7 @@ async def get_me(
 
 @router.post("/logout", response_model=MsgResponse, summary="Logout — blacklists tokens")
 async def logout(
+    response: Response,
     data: RefreshRequest | None = None,
     creds: HTTPAuthorizationCredentials = Depends(_bearer),
     redis=Depends(get_redis_client),
@@ -203,10 +249,10 @@ async def logout(
             await blacklist_token(redis, jti, max(ttl, 1))
 
         except ValueError:
-            print("[LOGOUT] ⚠️ Invalid token ignored")
+            logger.warning("Logout: invalid token ignored")
 
-
-    print(f"[LOGOUT] ✅ {current_user.email}")
+    _clear_auth_cookies(response)
+    logger.info("Logout: %s", current_user.email)
     return MsgResponse(message="Logged out successfully.")
 
 
@@ -215,7 +261,9 @@ async def logout(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/forgot-password", response_model=MsgResponse)
+@limiter.limit("5/minute")
 async def forgot_password(
+    request: Request,
     data: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis_client),
@@ -252,13 +300,11 @@ async def forgot_password(
         f"?token={reset_token}&org={org.slug}"
     )
 
-    # Print token to terminal — use this to test without opening email
-    print(f"\n{'='*62}")
-    print(f"[RESET] Email  : {user.email}")
-    print(f"[RESET] Token  : {reset_token}")
-    print(f"[RESET] Link   : {reset_link}")
-    print(f"[RESET] → Copy token above. Use in POST /reset-password as 'reset_token'")
-    print(f"{'='*62}\n")
+    # Log token to console so devs can test without email (debug level)
+    logger.debug(
+        "Password reset token for %s | token: %s | link: %s",
+        user.email, reset_token, reset_link,
+    )
 
     try:
         await send_password_reset_email(
@@ -267,8 +313,8 @@ async def forgot_password(
             reset_link=reset_link,
             expire_hours=settings.PASSWORD_RESET_EXPIRE_HOURS,
         )
-    except Exception as e:
-        print(f"[EMAIL] ⚠️  Reset email failed (token above still works): {e}")
+    except Exception:
+        logger.exception("Reset email failed for %s (token still valid)", user.email)
 
     return _ok
 
@@ -278,7 +324,9 @@ async def forgot_password(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/reset-password", response_model=MsgResponse)
+@limiter.limit("10/minute")
 async def reset_password(
+    request: Request,
     data: ResetPasswordRequest,
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis_client),
@@ -292,18 +340,20 @@ async def reset_password(
     raw_user_id = await redis.get(redis_key)
 
     if not raw_user_id:
-        print(f"[RESET] ❌ Token not found/expired")
+        logger.warning("Password reset: token not found or expired")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reset link is invalid or has expired. Please request a new one.",
         )
+
+    # Delete token immediately (single-use) — prevents race condition
+    await redis.delete(redis_key)
 
     user_id = raw_user_id.decode() if isinstance(raw_user_id, bytes) else raw_user_id
     result  = await db.execute(select(User).where(User.id == user_id))
     user    = result.scalar_one_or_none()
 
     if not user or not user.is_active:
-        await redis.delete(redis_key)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User not found or account is inactive.",
@@ -311,9 +361,8 @@ async def reset_password(
 
     user.password_hash = hash_password(data.new_password)
     await db.commit()
-    await redis.delete(redis_key)  # single-use
 
-    print(f"[RESET] ✅ Password changed for {user.email}")
+    logger.info("Password reset successful for %s", user.email)
     return MsgResponse(message="Password reset successfully. Please log in.")
 
 
@@ -338,7 +387,7 @@ async def change_password(
     current_user.password_hash = hash_password(data.new_password)
     await db.commit()
 
-    print(f"[AUTH] ✅ Password changed for {current_user.email}")
+    logger.info("Password changed for %s", current_user.email)
     return MsgResponse(message="Password changed successfully.")
 
 @router.put("/me", response_model=UserProfile, summary="Update current user profile")
@@ -348,7 +397,14 @@ async def update_profile(
     db: AsyncSession = Depends(get_db),
 ):
     if data.email:
-        current_user.email = data.email
+        existing = (await db.execute(
+            select(User)
+            .where(User.email == data.email.lower().strip())
+            .where(User.id != current_user.id)
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use.")
+        current_user.email = data.email.lower().strip()
 
     if data.first_name:
         current_user.first_name = data.first_name

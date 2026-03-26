@@ -1,7 +1,7 @@
 import hmac
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.models.call_logs import CallLog
 from app.models.lead import Lead, LeadStatus
-from app.models.campaigns import Campaign
+from app.models.campaigns import Campaign, CampaignStatus
 from app.models.wallet import WalletTransaction
 from app.services.wallet_service import deduct_minutes_for_call
 
@@ -262,19 +262,20 @@ async def bolna_webhook(
 
         else:
 
-            if not lead_id:
+            if not lead_obj or not campaign_id:
                 logger.warning(
-                    "CallLog missing and lead not resolved",
-                    extra={"call_id": call_id},
+                    "Skipping CallLog creation — lead or campaign could not be resolved "
+                    "(call_id=%s lead_resolved=%s campaign_id=%s)",
+                    call_id, lead_obj is not None, campaign_id,
                 )
-                return {"status": "ignored"}
+                return {"status": "ignored", "reason": "lead_or_campaign_unresolved"}
 
             logger.warning("Creating CallLog from webhook")
 
             new_log = CallLog(
                 external_call_id=call_id,
                 campaign_id=campaign_id,
-                lead_id=lead_id,
+                lead_id=str(lead_obj.id),
                 user_number=user_number,
                 duration=duration,
                 cost=cost,
@@ -289,8 +290,8 @@ async def bolna_webhook(
                 final_call_summary=payload.get("summary"),
                 summary=payload.get("summary"),
                 transfer_call=payload.get("transfer_call", False),
-                executed_at=datetime.utcnow(),
-                created_at=datetime.utcnow(),
+                executed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
 
             db.add(new_log)
@@ -316,13 +317,58 @@ async def bolna_webhook(
                     "ringing": "calling",
                     "completed": "completed",
                     "call-disconnected": "completed",
-                    "no-answer": "failed",
+                    "no-answer": "no_answer",
+                    "busy": "failed",
                     "failed": "failed",
+                    "error": "failed",
                 }
 
-                lead_status = status_map.get(status_value, "calling")
+                lead_status = status_map.get(status_value, "failed")
                 lead.status = LeadStatus(lead_status)
                 lead.external_call_id = call_id
+                lead.last_called = datetime.now(timezone.utc).replace(tzinfo=None)
+                if duration > 0:
+                    lead.duration = int(duration)
+
+                # Check if all leads in the campaign are done and mark completed
+                final_statuses = {LeadStatus.COMPLETED, LeadStatus.NO_ANSWER}
+                is_terminal = LeadStatus(lead_status) in final_statuses or (
+                    LeadStatus(lead_status) == LeadStatus.FAILED
+                    and lead.retry_count >= lead.max_retries
+                )
+                if is_terminal and lead.campaign_id:
+                    await db.flush()  # make this lead's new status visible to the count queries
+                    active_count = await db.scalar(
+                        select(func.count())
+                        .select_from(Lead)
+                        .where(
+                            Lead.campaign_id == lead.campaign_id,
+                            Lead.status.in_([
+                                LeadStatus.PENDING,
+                                LeadStatus.QUEUED,
+                                LeadStatus.CALLING,
+                            ]),
+                        )
+                    )
+                    pending_retries = await db.scalar(
+                        select(func.count())
+                        .select_from(Lead)
+                        .where(
+                            Lead.campaign_id == lead.campaign_id,
+                            Lead.status == LeadStatus.FAILED,
+                            Lead.retry_count < Lead.max_retries,
+                        )
+                    )
+                    if active_count == 0 and pending_retries == 0:
+                        campaign_result = await db.execute(
+                            select(Campaign).where(Campaign.id == lead.campaign_id)
+                        )
+                        camp = campaign_result.scalar_one_or_none()
+                        if camp and camp.status == CampaignStatus.running:
+                            camp.status = CampaignStatus.completed
+                            camp.is_processing = False
+                            camp.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                            logger.info("Campaign %s auto-completed via webhook", camp.id)
 
         # -------------------------
         # Wallet Deduction

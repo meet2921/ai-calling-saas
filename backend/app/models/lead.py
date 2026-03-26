@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     Column, Integer, String, ForeignKey,
     DateTime, SmallInteger,
@@ -17,6 +17,7 @@ class LeadStatus(str, PyEnum):
     CALLING = "calling"
     COMPLETED = "completed"
     FAILED = "failed"
+    NO_ANSWER = "no_answer"
 
 
 class Lead(Base):
@@ -61,9 +62,10 @@ class Lead(Base):
 
     custom_fields = Column(JSONB, default=dict)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     campaign = relationship("Campaign")
 
     external_call_id = Column(String, nullable=True, index=True)
-    
+    last_called = Column(DateTime, nullable=True)
+    duration = Column(Integer, nullable=True)  # seconds of last call

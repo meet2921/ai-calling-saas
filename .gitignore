@@ -1,15 +1,6 @@
-aicall-saas
-.venv
-**/__pycache__/
-*.py[cod]
-*.pyc
-.env
-call_ai
-call_logs.log
-
-
 # Python
 __pycache__/
+*.py[cod]
 *.pyc
 *.pyo
 *.pyd
@@ -17,7 +8,22 @@ __pycache__/
 # Environment
 .env
 .venv
+venv/
+
+# Logs
+*.log
+call_logs.log
+
+# Test & coverage artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Misc
+aicall-saas
+call_ai

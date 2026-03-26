@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+htmlcov/
+.pytest_cache/
+*.log
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/.env*
+
+# Git
+.git/
+.gitignore
+
+# Test / CI
+tests/
+requirements-test.txt
+
+# Misc
+.env
+*.md
+README*

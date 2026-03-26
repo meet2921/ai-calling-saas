@@ -6,7 +6,6 @@ Never silently swallows errors — prints exact failure reason to console.
 """
 
 import logging
-import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -43,21 +42,22 @@ async def _safe_send(to_email: str, subject: str, html: str, text: str, kind: st
     """Wraps send_email. Always returns, never raises. Logs exact error."""
     try:
         await send_email(to_email, subject, html, text)
-        print(f"[EMAIL] ✅ {kind} sent → {to_email}")
+        log.info("%s sent to %s", kind, to_email)
         return True
-    except aiosmtplib.SMTPAuthenticationError as e:
-        print(f"[EMAIL] ❌ AUTH ERROR — {kind} to {to_email}")
-        print(f"[EMAIL]    {e}")
-        print("[EMAIL]    → You need a Gmail APP PASSWORD (16 chars, no spaces)")
-        print("[EMAIL]    → Go to: https://myaccount.google.com/apppasswords")
-    except aiosmtplib.SMTPConnectError as e:
-        print(f"[EMAIL] ❌ CONNECT ERROR — {kind} to {to_email}")
-        print(f"[EMAIL]    {e}")
-        print(f"[EMAIL]    → Port {settings.SMTP_PORT} is blocked by your network/firewall")
-    except Exception as e:
-        print(f"[EMAIL] ❌ FAILED — {kind} to {to_email}")
-        print(f"[EMAIL]    {type(e).__name__}: {e}")
-        traceback.print_exc()
+    except aiosmtplib.SMTPAuthenticationError:
+        log.error(
+            "AUTH ERROR sending %s to %s — check SMTP credentials. "
+            "Gmail requires an App Password (16 chars, no spaces): "
+            "https://myaccount.google.com/apppasswords",
+            kind, to_email, exc_info=True,
+        )
+    except aiosmtplib.SMTPConnectError:
+        log.error(
+            "CONNECT ERROR sending %s to %s — port %s may be blocked",
+            kind, to_email, settings.SMTP_PORT, exc_info=True,
+        )
+    except Exception:
+        log.exception("Failed to send %s to %s", kind, to_email)
     return False
 
 

@@ -4,7 +4,7 @@ from sqlalchemy import select, delete, func
 from uuid import UUID
 from app.services.wallet_service import has_sufficient_balance, get_balance
 from app.db.session import get_db
-from app.models.campaigns import Campaign
+from app.models.campaigns import Campaign, CampaignStatus
 from app.schemas.campaigns import CampaignCreate, CampaignResponse, CampaignStatusUpdate
 from app.services.campaign_service import (
     start_campaign,
@@ -53,20 +53,26 @@ async def create_campaign(
             detail="Bolna agent ID required"
         )
 
+    # Validate Bolna agent ID — must exist before campaign is created
     try:
         agent = await get_agent_details(campaign_data.bolna_agent_id)
-
         if not agent:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid Bolna agent ID"
-            )
-            
+            raise ValueError("Empty agent response")
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Bolna agent ID — agent not found. Please check the agent ID and try again."
+        )
+
+    try:
+        status = CampaignStatus.scheduled if campaign_data.scheduled_at else CampaignStatus.draft
         campaign = Campaign(
             name=campaign_data.name,
             description=campaign_data.description,
             organization_id=current_user.organization_id,
-            bolna_agent_id=campaign_data.bolna_agent_id
+            bolna_agent_id=campaign_data.bolna_agent_id,
+            scheduled_at=campaign_data.scheduled_at,
+            status=status,
         )
 
         db.add(campaign)
@@ -74,12 +80,12 @@ async def create_campaign(
         await db.refresh(campaign)
 
         return campaign
-    
+
     except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail="Error occurred while fetching Bolna agent details"
-            )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create campaign"
+        )
 
 @router.get("/", response_model=list[CampaignResponse])
 async def list_campaigns(
@@ -134,9 +140,23 @@ async def get_campaign_agent(
     if not campaign.bolna_agent_id:
         raise HTTPException(status_code=400, detail="No agent linked")
 
-    agent_data = await get_agent_details(campaign.bolna_agent_id)
+    try:
+        agent_data = await get_agent_details(campaign.bolna_agent_id)
+        if agent_data:
+            return agent_data
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Bolna agent fetch failed for {campaign.bolna_agent_id}: {e}")
 
-    return agent_data
+    # Fallback when Bolna API is unreachable — return enough for the UI to render
+    return {
+        "agent_id": campaign.bolna_agent_id,
+        "agent_name": campaign.bolna_agent_id,
+        "name": campaign.bolna_agent_id,
+        "description": None,
+        "config_summary": None,
+        "_bolna_unreachable": True,
+    }
 
 @router.post("/{campaign_id}/start", response_model=CampaignResponse)
 async def start_campaign_endpoint(
